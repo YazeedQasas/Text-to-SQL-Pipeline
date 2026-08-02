@@ -1,0 +1,203 @@
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f6f7f9;
+  margin: 0;
+  padding: 2rem;
+  color: #1a1a1a;
+}
+
+.page {
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.subtitle {
+  color: #555;
+  margin-top: -0.5rem;
+}
+
+.query-form {
+  display: flex;
+  gap: 0.5rem;
+  margin: 1.5rem 0;
+}
+
+.query-form input {
+  flex: 1;
+  padding: 0.6rem 0.8rem;
+  font-size: 1rem;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+}
+
+.query-form button {
+  padding: 0.6rem 1.2rem;
+  font-size: 1rem;
+  border: none;
+  border-radius: 6px;
+  background: #2b6cb0;
+  color: white;
+  cursor: pointer;
+}
+
+.query-form button:disabled {
+  background: #9db8d6;
+  cursor: not-allowed;
+}
+
+/* --- Pipeline progress ---------------------------------------------------- */
+
+.stages {
+  list-style: none;
+  margin: 0 0 1.5rem;
+  padding: 1rem 1.25rem;
+  background: white;
+  border: 1px solid #e2e2e2;
+  border-radius: 8px;
+}
+
+.stage {
+  display: grid;
+  grid-template-columns: 1.25rem 1fr auto;
+  align-items: baseline;
+  gap: 0 0.6rem;
+  padding: 0.3rem 0;
+  color: #9aa0a6;
+  font-size: 0.92rem;
+}
+
+.stage-icon {
+  text-align: center;
+}
+
+.stage-duration {
+  font-variant-numeric: tabular-nums;
+  font-size: 0.8rem;
+  color: #9aa0a6;
+}
+
+.stage-detail,
+.stage-stream {
+  grid-column: 2 / -1;
+  margin: 0.15rem 0 0.2rem;
+  font-size: 0.8rem;
+  color: #777;
+}
+
+.stage-stream {
+  background: #f0f0f0;
+  padding: 0.5rem 0.6rem;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 9rem;
+  overflow-y: auto;
+}
+
+.stage-detail-expandable > summary {
+  cursor: pointer;
+  width: fit-content;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.stage-detail-expandable > summary:hover {
+  color: #2b6cb0;
+}
+
+.stage-content {
+  margin: 0.4rem 0 0.2rem;
+  background: #f0f0f0;
+  padding: 0.6rem 0.7rem;
+  border-radius: 4px;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: #333;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 22rem;
+  overflow: auto;
+}
+
+.stage-active {
+  color: #2b6cb0;
+  font-weight: 600;
+}
+
+.stage-active .stage-icon {
+  animation: stage-pulse 1.1s ease-in-out infinite;
+}
+
+.stage-done {
+  color: #1a1a1a;
+}
+
+.stage-done .stage-icon {
+  color: #2f855a;
+}
+
+.stage-failed {
+  color: #9b1c1c;
+  font-weight: 600;
+}
+
+@keyframes stage-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .stage-active .stage-icon {
+    animation: none;
+  }
+}
+
+.error {
+  background: #fde8e8;
+  border: 1px solid #f5b5b5;
+  color: #9b1c1c;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  margin-bottom: 1rem;
+}
+
+.result {
+  background: white;
+  border: 1px solid #e2e2e2;
+  border-radius: 8px;
+  padding: 1.5rem;
+}
+
+.answer {
+  font-size: 1.05rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+/* Blinking caret while the model is still writing the answer. */
+.answer-streaming::after {
+  content: "▍";
+  color: #2b6cb0;
+  animation: caret-blink 1s step-end infinite;
+}
+
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .answer-streaming::after {
+    animation: none;
+  }
+}
+
+pre {
+  background: #f0f0f0;
+  padding: 0.75rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.85rem;
+}

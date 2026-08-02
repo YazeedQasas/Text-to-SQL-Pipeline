@@ -1,0 +1,25 @@
+# Local dev infra: Qdrant (vector DB) only.
+#
+# The LLM and embedding model (BGE-M3) are served by LM
+# Studio, which runs as a desktop app on the host — not containerized here.
+# Install LM Studio, load both models, and enable Developer > Start Server
+# (default: http://localhost:1234/v1, OpenAI-compatible).
+#
+# MySQL is NOT included here — per the spec it's an existing instance you
+# already have; point .env at it.
+#
+# Usage:
+#   docker compose up -d
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.9.4
+    container_name: texttosql-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  qdrant_data:
