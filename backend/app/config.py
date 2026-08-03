@@ -23,7 +23,22 @@ RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "5"))
 # match exactly what LM Studio reports at GET /v1/models.
 LM_STUDIO_BASE_URL = os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-bge-m3")
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
 LLM_MODEL = os.getenv("LLM_MODEL", "google/gemma-4-e4b")
+
+# --- Schema catalog review ----------------------------------------------------
+# How many real rows to show the reviewing LLM per changed table. This is the
+# strongest signal it has for telling a legitimately-named domain table apart
+# from a scratch import, so it is worth more than a couple of rows — but it all
+# goes into the prompt, so keep it small.
+CATALOG_SAMPLE_ROWS = int(os.getenv("CATALOG_SAMPLE_ROWS", "5"))
+# Must stay at 1 against LM Studio. Serving concurrent completions from a single
+# loaded model truncates responses: the stream ends mid-object and json.loads
+# fails with "Unterminated JSON object". Reviews then fall back to the
+# fail-closed verdict, so every new table comes back flagged with an empty
+# description — which looks like a prompt bug but is a transport one. Raise this
+# only against a backend that genuinely supports parallel inference.
+CATALOG_REVIEW_CONCURRENCY = int(os.getenv("CATALOG_REVIEW_CONCURRENCY", "1"))
 
 # --- Query execution safety ---------------------------------------------------
 MAX_RESULT_ROWS = int(os.getenv("MAX_RESULT_ROWS", "200"))

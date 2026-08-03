@@ -1,9 +1,26 @@
 """
-Schema document definitions for the legal_db demo database.
+Schema document definitions for the legal_db demo database (Arabic).
 
 This module is the single source of truth for what gets embedded and stored
 in Qdrant for retrieval-augmented SQL generation. It mirrors db/01_schema.sql
 exactly — if you change the SQL schema, update the corresponding TableDoc here.
+
+Language policy
+---------------
+- Descriptions (table and column) are written in ARABIC, because they are what
+  the retriever matches an Arabic user question against.
+- Identifiers — table names, column names, foreign key targets — stay in
+  ENGLISH, and are referenced verbatim inside the Arabic prose. The user never
+  sees them, the LLM writes measurably better SQL against them, and it avoids
+  having to backtick-quote every identifier in generated queries.
+- Structural labels emitted by `build_table_doc_text` ("Table:", "Columns:",
+  "Primary key:") also stay English so this file and the backend's prompt
+  builder (`app/services/retrieval.py::format_tables_for_prompt`) render the
+  same scaffolding.
+- ENUM values are still stored in English in MySQL, so each ENUM column's
+  description glosses them in Arabic (e.g. "'Open' (مفتوحة)"). That mapping is
+  what lets the model turn "القضايا المفتوحة" into `status = 'Open'`. When the
+  underlying data is migrated to Arabic, update these glosses to match.
 
 Design notes
 ------------
@@ -52,109 +69,114 @@ class TableDoc:
 TABLES: list[TableDoc] = [
     TableDoc(
         name="courts",
+        # Kept deliberately narrow: this table answers questions about the
+        # institution itself (name, level, jurisdiction, location). Earlier
+        # wording also enumerated cases and judges, which made it outrank
+        # `judges` on judge questions — in Arabic قضية / قاضٍ / قضائية share the
+        # ق-ض-ي root, so naming them here pulls this table into any question
+        # about either.
         description=(
-            "Judicial bodies (courthouses) where cases are filed and heard, such as "
-            "trial courts, appellate courts, and the supreme court. Use this table to "
-            "answer questions about which court handled a case, a court's jurisdiction "
-            "(federal vs. state), its level in the court hierarchy, or its physical "
-            "location. Every case, and every judge's home court, links back here."
+            "المحاكم كمؤسسات قضائية: بياناتها التعريفية مثل اسمها الرسمي، ودرجتها في "
+            "التسلسل القضائي (ابتدائية أو استئناف أو عليا)، ونطاق اختصاصها (اتحادي أو "
+            "ولائي)، والمدينة أو المنطقة التي تقع فيها. استخدم هذا الجدول عندما يكون "
+            "السؤال عن المحكمة نفسها — اسمها أو درجتها أو اختصاصها أو مقرها — أو للحصول "
+            "على اسم المحكمة بعد الوصول إليها من جدول آخر عبر court_id."
         ),
         primary_key="court_id",
         columns=[
-            ColumnDoc("court_id", "INT", False, "Unique identifier for the court."),
-            ColumnDoc("name", "VARCHAR(255)", False, "Official name of the court, e.g. 'Supreme Court'."),
-            ColumnDoc("level", "ENUM('Trial','Appellate','Supreme')", False, "Position of the court in the judicial hierarchy."),
-            ColumnDoc("jurisdiction", "VARCHAR(255)", False, "Governing jurisdiction of the court, e.g. 'Federal' or 'State'."),
-            ColumnDoc("location", "VARCHAR(255)", False, "City or region where the court sits."),
+            ColumnDoc("court_id", "INT", False, "معرّف فريد للمحكمة."),
+            ColumnDoc("name", "VARCHAR(255)", False, "الاسم الرسمي للمحكمة، مثل 'المحكمة العليا'."),
+            ColumnDoc("level", "ENUM('ابتدائية','استئناف','عليا')", False, "درجة المحكمة في التسلسل القضائي. القيم المخزَّنة حصرًا: 'ابتدائية'، 'استئناف'، 'عليا'."),
+            ColumnDoc("jurisdiction", "VARCHAR(255)", False, "الاختصاص القضائي للمحكمة. القيم المخزَّنة: 'اتحادي'، 'محلي'."),
+            ColumnDoc("location", "VARCHAR(255)", False, "المدينة أو المنطقة التي تقع فيها المحكمة، مثل 'عمّان'، 'إربد'."),
         ],
     ),
     TableDoc(
         name="judges",
         description=(
-            "Judicial officers, identified by name (full_name), who preside over "
-            "hearings and issue judgements. Each judge is permanently attached to one "
-            "home court. This is the table to look up whenever a question names a "
-            "specific judge (e.g. 'Judge X') — resolve full_name here to judge_id, "
-            "then join to hearings or judgements on judge_id to find what cases that "
-            "judge presided over or ruled on. Also holds title/seniority, appointment "
-            "date, and home court."
+            "القضاة، ويُعرَّفون بالاسم الكامل (full_name)، الذين ينظرون في الجلسات ويصدرون "
+            "الأحكام. كل قاضٍ مرتبط بمحكمة واحدة يتبع لها. هذا هو الجدول الذي يُرجَع إليه "
+            "كلما ورد اسم قاضٍ محدد في السؤال (مثل 'القاضي فلان') — يُستخرج judge_id من "
+            "full_name هنا، ثم يُربط بجدول hearings أو judgements عبر judge_id لمعرفة "
+            "القضايا التي نظر فيها أو أصدر أحكامًا بشأنها. يتضمن أيضًا اللقب القضائي "
+            "وتاريخ التعيين والمحكمة التابع لها."
         ),
         primary_key="judge_id",
         foreign_keys=[ForeignKeyDoc("court_id", "courts", "court_id")],
         columns=[
-            ColumnDoc("judge_id", "INT", False, "Unique identifier for the judge."),
-            ColumnDoc("full_name", "VARCHAR(255)", False, "Judge's full name."),
-            ColumnDoc("title", "VARCHAR(100)", False, "Judicial title, e.g. 'Chief Judge', 'Associate Judge', 'Chief Justice'."),
-            ColumnDoc("court_id", "INT", False, "Home court of the judge. Foreign key to courts.court_id."),
-            ColumnDoc("appointed_date", "DATE", True, "Date the judge was appointed to the bench."),
+            ColumnDoc("judge_id", "INT", False, "معرّف فريد للقاضي."),
+            ColumnDoc("full_name", "VARCHAR(255)", False, "الاسم الكامل للقاضي كما هو مخزَّن. يُستخدم للعرض فقط؛ للبحث عن اسم استعمل full_name_norm."),
+            ColumnDoc("title", "VARCHAR(100)", False, "اللقب القضائي، مثل 'رئيسة المحكمة'، 'قاضٍ مشارك'، 'قاضية استئناف'، 'رئيس القضاة'."),
+            ColumnDoc("court_id", "INT", False, "المحكمة التي يتبع لها القاضي. مفتاح خارجي إلى courts.court_id."),
+            ColumnDoc("appointed_date", "DATE", True, "تاريخ تعيين القاضي في منصبه القضائي."),
+            ColumnDoc("full_name_norm", "VARCHAR(255)", True, "نسخة مُوحَّدة إملائيًا من full_name، يولّدها النظام تلقائيًا: الهمزات (أ إ آ) تُردّ إلى ا، والتاء المربوطة ة إلى ه، والألف المقصورة ى إلى ي، وتُحذف التشكيلات والتطويل. استخدم هذا العمود دائمًا عند البحث عن اسم قاضٍ، مع كتابة المصطلح المطلوب بالصيغة المُوحَّدة نفسها."),
         ],
     ),
     TableDoc(
         name="lawyers",
         description=(
-            "Legal counsel (attorneys) who represent parties in a case. Use this table "
-            "to answer questions about a lawyer's identity, bar registration number, or "
-            "the law firm they belong to. Which lawyer represented which party in which "
-            "case is recorded in case_parties, not here — join through case_parties.lawyer_id."
+            "المحامون (وكلاء الأطراف) الذين يمثلون أطراف القضية. استخدم هذا الجدول للإجابة "
+            "عن الأسئلة المتعلقة بهوية المحامي، أو رقم قيده في نقابة المحامين، أو المكتب "
+            "القانوني الذي ينتمي إليه. أما تحديد أي محامٍ مثّل أي طرف في أي قضية فمسجَّل في "
+            "جدول case_parties وليس هنا — يُربط عبر case_parties.lawyer_id."
         ),
         primary_key="lawyer_id",
         columns=[
-            ColumnDoc("lawyer_id", "INT", False, "Unique identifier for the lawyer."),
-            ColumnDoc("full_name", "VARCHAR(255)", False, "Lawyer's full name."),
-            ColumnDoc("bar_number", "VARCHAR(50)", False, "Unique bar association registration number."),
-            ColumnDoc("firm_name", "VARCHAR(255)", True, "Name of the law firm the lawyer works for, if any (NULL for solo practitioners)."),
+            ColumnDoc("lawyer_id", "INT", False, "معرّف فريد للمحامي."),
+            ColumnDoc("full_name", "VARCHAR(255)", False, "الاسم الكامل للمحامي كما هو مخزَّن. يُستخدم للعرض فقط؛ للبحث عن اسم استعمل full_name_norm."),
+            ColumnDoc("bar_number", "VARCHAR(50)", False, "رقم القيد الفريد في نقابة المحامين، ويُكتب بالحروف اللاتينية مثل 'BAR-10023'."),
+            ColumnDoc("firm_name", "VARCHAR(255)", True, "اسم المكتب القانوني الذي يعمل به المحامي، إن وُجد (فارغ للمحامين المستقلين)."),
+            ColumnDoc("full_name_norm", "VARCHAR(255)", True, "نسخة مُوحَّدة إملائيًا من full_name يولّدها النظام تلقائيًا. استخدم هذا العمود دائمًا عند البحث عن اسم محامٍ."),
         ],
     ),
     TableDoc(
         name="parties",
         description=(
-            "Individuals or organizations involved in a legal case — plaintiffs, "
-            "defendants, appellants, respondents, etc. A party is a person or company "
-            "name and contact info only; their role and which case they were involved "
-            "in is recorded in case_parties, not here. Use this table to look up who a "
-            "named person or organization is, then join through case_parties to find "
-            "their cases."
+            "الأشخاص أو الجهات المشاركون في القضية — المدّعون والمدّعى عليهم والمستأنفون "
+            "والمستأنف ضدهم وغيرهم. هذا الجدول يحفظ اسم الشخص أو الجهة وبيانات التواصل "
+            "فقط؛ أما صفته في القضية والقضية التي شارك فيها فمسجَّلة في case_parties وليس "
+            "هنا. استخدم هذا الجدول لمعرفة هوية شخص أو جهة ورد اسمها في السؤال، ثم اربطه "
+            "عبر case_parties للوصول إلى قضاياه."
         ),
         primary_key="party_id",
         columns=[
-            ColumnDoc("party_id", "INT", False, "Unique identifier for the party."),
-            ColumnDoc("name", "VARCHAR(255)", False, "Full name of the individual or organization."),
-            ColumnDoc("party_type", "ENUM('Individual','Organization')", False, "Whether the party is a person or a company/institution."),
-            ColumnDoc("contact_info", "VARCHAR(255)", True, "Email or other contact information for the party."),
+            ColumnDoc("party_id", "INT", False, "معرّف فريد للطرف."),
+            ColumnDoc("name", "VARCHAR(255)", False, "الاسم الكامل للشخص أو الجهة كما هو مخزَّن. يُستخدم للعرض فقط؛ للبحث عن اسم استعمل name_norm."),
+            ColumnDoc("party_type", "ENUM('شخص طبيعي','جهة اعتبارية')", False, "نوع الطرف. القيم المخزَّنة حصرًا: 'شخص طبيعي'، 'جهة اعتبارية'."),
+            ColumnDoc("contact_info", "VARCHAR(255)", True, "البريد الإلكتروني أو وسيلة تواصل أخرى للطرف."),
+            ColumnDoc("name_norm", "VARCHAR(255)", True, "نسخة مُوحَّدة إملائيًا من name يولّدها النظام تلقائيًا. استخدم هذا العمود دائمًا عند البحث عن اسم شخص أو جهة."),
         ],
     ),
     TableDoc(
         name="cases",
         description=(
-            "The central record for a legal case (lawsuit or criminal proceeding) "
-            "filed at a court. This is usually the starting point for questions about "
-            "'a case' — its case number, title, type (civil, criminal, appeal, etc.), "
-            "filing date, and current status (Open, Closed, On Appeal, Dismissed). "
-            "Everything else revolves around a case: its parties and their lawyers "
-            "(case_parties), its scheduled sessions (hearings), its final ruling "
-            "(judgements), and the laws it cites (case_legislation_citations)."
+            "السجل الرئيسي للقضية (دعوى مدنية أو جنائية) المرفوعة أمام محكمة. وهو عادةً "
+            "نقطة البداية للأسئلة التي تدور حول 'قضية' — رقمها وعنوانها ونوعها (مدنية، "
+            "جنائية، استئناف، وغيرها) وتاريخ رفعها وحالتها الراهنة. وكل ما عداه يدور حول "
+            "القضية: أطرافها ومحاموهم (case_parties)، وجلساتها (hearings)، وحكمها النهائي "
+            "(judgements)، والتشريعات التي استندت إليها (case_legislation_citations)."
         ),
         primary_key="case_id",
         foreign_keys=[ForeignKeyDoc("court_id", "courts", "court_id")],
         columns=[
-            ColumnDoc("case_id", "INT", False, "Unique identifier for the case."),
-            ColumnDoc("case_number", "VARCHAR(50)", False, "Official docket/case number, e.g. 'CV-2023-0142'."),
-            ColumnDoc("title", "VARCHAR(500)", False, "Case title/caption, typically 'Party A v. Party B'."),
-            ColumnDoc("court_id", "INT", False, "Court where the case was filed. Foreign key to courts.court_id."),
-            ColumnDoc("case_type", "VARCHAR(100)", False, "Category of case, e.g. 'Civil - Contract', 'Criminal - Fraud'."),
-            ColumnDoc("filing_date", "DATE", False, "Date the case was filed with the court."),
-            ColumnDoc("status", "ENUM('Open','Closed','On Appeal','Dismissed')", False, "Current status of the case."),
+            ColumnDoc("case_id", "INT", False, "معرّف فريد للقضية."),
+            ColumnDoc("case_number", "VARCHAR(50)", False, "رقم القضية الرسمي في سجل المحكمة، مثل 'CV-2023-0142'."),
+            ColumnDoc("title", "VARCHAR(500)", False, "عنوان القضية، وعادةً بصيغة 'فلان ضد فلان'. يُستخدم للعرض؛ للبحث في العنوان استعمل title_norm."),
+            ColumnDoc("court_id", "INT", False, "المحكمة التي رُفعت أمامها القضية. مفتاح خارجي إلى courts.court_id."),
+            ColumnDoc("case_type", "VARCHAR(100)", False, "تصنيف القضية. القيم المخزَّنة: 'مدني - عقود'، 'مدني - تنظيمي'، 'مدني - استئناف تنظيمي'، 'مدني - دعوى متقابلة'، 'جنائي - احتيال'."),
+            ColumnDoc("filing_date", "DATE", False, "تاريخ رفع القضية أمام المحكمة."),
+            ColumnDoc("status", "ENUM('مفتوحة','مغلقة','قيد الاستئناف','مشطوبة')", False, "الحالة الراهنة للقضية. القيم المخزَّنة حصرًا: 'مفتوحة' (منظورة)، 'مغلقة' (منتهية)، 'قيد الاستئناف'، 'مشطوبة' (مرفوضة)."),
+            ColumnDoc("title_norm", "VARCHAR(500)", True, "نسخة مُوحَّدة إملائيًا من title يولّدها النظام تلقائيًا. استخدم هذا العمود عند البحث عن قضية باسم أحد أطرافها."),
         ],
     ),
     TableDoc(
         name="case_parties",
         description=(
-            "Junction table linking cases to the parties involved in them, recording "
-            "each party's role (Plaintiff, Defendant, Appellant, Respondent, Third "
-            "Party) and, optionally, which lawyer represented them for that case. Use "
-            "this table to answer 'who are the plaintiffs/defendants in case X', 'which "
-            "cases is party Y involved in', or 'which lawyer represented party Y in "
-            "case X'. This is the join hub between cases, parties, and lawyers."
+            "جدول ربط يصل القضايا بالأطراف المشاركين فيها، ويسجّل صفة كل طرف (مدّعٍ، مدّعى "
+            "عليه، مستأنف، مستأنف ضده، طرف ثالث)، وكذلك المحامي الذي مثّله في تلك القضية "
+            "إن وُجد. استخدم هذا الجدول للإجابة عن 'من هم المدّعون أو المدّعى عليهم في "
+            "القضية الفلانية'، أو 'ما القضايا التي شارك فيها فلان'، أو 'أي محامٍ مثّل فلانًا "
+            "في قضية معينة'. وهو محور الربط بين cases وparties وlawyers."
         ),
         primary_key="case_party_id",
         foreign_keys=[
@@ -163,22 +185,21 @@ TABLES: list[TableDoc] = [
             ForeignKeyDoc("lawyer_id", "lawyers", "lawyer_id"),
         ],
         columns=[
-            ColumnDoc("case_party_id", "INT", False, "Unique identifier for this case/party link."),
-            ColumnDoc("case_id", "INT", False, "The case the party is involved in. Foreign key to cases.case_id."),
-            ColumnDoc("party_id", "INT", False, "The party involved in the case. Foreign key to parties.party_id."),
-            ColumnDoc("role", "ENUM('Plaintiff','Defendant','Appellant','Respondent','Third Party')", False, "The party's role in this specific case."),
-            ColumnDoc("lawyer_id", "INT", True, "Lawyer representing this party in this case, if recorded. Foreign key to lawyers.lawyer_id."),
+            ColumnDoc("case_party_id", "INT", False, "معرّف فريد لهذا الربط بين القضية والطرف."),
+            ColumnDoc("case_id", "INT", False, "القضية التي شارك فيها الطرف. مفتاح خارجي إلى cases.case_id."),
+            ColumnDoc("party_id", "INT", False, "الطرف المشارك في القضية. مفتاح خارجي إلى parties.party_id."),
+            ColumnDoc("role", "ENUM('مدعي','مدعى عليه','مستأنف','مستأنف ضده','طرف ثالث')", False, "صفة الطرف في هذه القضية تحديدًا. القيم المخزَّنة حصرًا: 'مدعي'، 'مدعى عليه'، 'مستأنف'، 'مستأنف ضده'، 'طرف ثالث'."),
+            ColumnDoc("lawyer_id", "INT", True, "المحامي الذي يمثل هذا الطرف في هذه القضية، إن سُجِّل. مفتاح خارجي إلى lawyers.lawyer_id."),
         ],
     ),
     TableDoc(
         name="hearings",
         description=(
-            "Scheduled court sessions (preliminary hearings, trials, arraignments, "
-            "appellate reviews, etc.) held for a case, each presided over by one "
-            "judge. Use this table to answer questions about when a case was heard, "
-            "what type of hearing occurred, what happened at it (outcome_notes), or "
-            "which judge presided. A case typically has multiple hearings over time; "
-            "its final ruling is recorded separately in judgements."
+            "جلسات المحكمة المنعقدة لقضية ما (جلسات تمهيدية، محاكمات، جلسات اتهام، "
+            "مراجعات استئنافية وغيرها)، ويرأس كلًّا منها قاضٍ واحد. استخدم هذا الجدول "
+            "للإجابة عن متى نُظرت القضية، وما نوع الجلسة، وما جرى فيها أو ما تقرر "
+            "(outcome_notes)، وأي قاضٍ ترأسها. وعادةً ما يكون للقضية عدة جلسات على مدى "
+            "الوقت، أما حكمها النهائي فمسجَّل على حدة في judgements."
         ),
         primary_key="hearing_id",
         foreign_keys=[
@@ -186,23 +207,23 @@ TABLES: list[TableDoc] = [
             ForeignKeyDoc("judge_id", "judges", "judge_id"),
         ],
         columns=[
-            ColumnDoc("hearing_id", "INT", False, "Unique identifier for the hearing."),
-            ColumnDoc("case_id", "INT", False, "The case this hearing belongs to. Foreign key to cases.case_id."),
-            ColumnDoc("judge_id", "INT", False, "Judge presiding over the hearing. Foreign key to judges.judge_id."),
-            ColumnDoc("hearing_date", "DATETIME", False, "Date and time the hearing took place."),
-            ColumnDoc("hearing_type", "VARCHAR(100)", False, "Type of hearing, e.g. 'Preliminary Hearing', 'Trial', 'Arraignment'."),
-            ColumnDoc("outcome_notes", "TEXT", True, "Free-text notes on what happened or was decided at the hearing."),
+            ColumnDoc("hearing_id", "INT", False, "معرّف فريد للجلسة."),
+            ColumnDoc("case_id", "INT", False, "القضية التي تتبع لها هذه الجلسة. مفتاح خارجي إلى cases.case_id."),
+            ColumnDoc("judge_id", "INT", False, "القاضي الذي ترأس الجلسة. مفتاح خارجي إلى judges.judge_id."),
+            ColumnDoc("hearing_date", "DATETIME", False, "تاريخ ووقت انعقاد الجلسة."),
+            ColumnDoc("hearing_type", "VARCHAR(100)", False, "نوع الجلسة. القيم المخزَّنة: 'جلسة تمهيدية'، 'محاكمة'، 'جلسة اتهام'، 'مراجعة استئنافية'."),
+            ColumnDoc("outcome_notes", "TEXT", True, "ملاحظات نصية حرة عمّا جرى أو ما تقرر في الجلسة."),
         ],
     ),
     TableDoc(
         name="judgements",
         description=(
-            "Final rulings/verdicts issued for a case by a judge — the authoritative "
-            "outcome of the case. Use this table to answer 'what was the verdict/ruling "
-            "in case X', 'who won', or 'what did the court decide and why' (summary). "
-            "Legal principles established by a judgement are recorded separately in "
-            "principles, joined via judgement_id. Not every case has a judgement yet "
-            "(cases still Open or On Appeal may have none)."
+            "الأحكام النهائية الصادرة في القضايا عن القضاة — وهي النتيجة الرسمية "
+            "والفاصلة للقضية. استخدم هذا الجدول للإجابة عن 'ما الحكم الصادر في القضية "
+            "الفلانية'، أو 'من كسب الدعوى'، أو 'بماذا قضت المحكمة ولماذا' (summary). أما "
+            "المبادئ القانونية التي أرساها الحكم فمسجَّلة في جدول principles ويُربط بها عبر "
+            "judgement_id. وليست كل قضية لها حكم بعد (القضايا المفتوحة أو قيد الاستئناف قد "
+            "لا يكون لها حكم)."
         ),
         primary_key="judgement_id",
         foreign_keys=[
@@ -210,62 +231,62 @@ TABLES: list[TableDoc] = [
             ForeignKeyDoc("judge_id", "judges", "judge_id"),
         ],
         columns=[
-            ColumnDoc("judgement_id", "INT", False, "Unique identifier for the judgement."),
-            ColumnDoc("case_id", "INT", False, "The case this judgement rules on. Foreign key to cases.case_id."),
-            ColumnDoc("judge_id", "INT", False, "Judge who issued the judgement. Foreign key to judges.judge_id."),
-            ColumnDoc("decision_date", "DATE", False, "Date the judgement was issued."),
-            ColumnDoc("verdict", "VARCHAR(255)", False, "Short verdict label, e.g. 'Guilty', 'Judgement for Plaintiff'."),
-            ColumnDoc("summary", "TEXT", False, "Narrative summary of the court's reasoning and decision."),
-            ColumnDoc("full_text_url", "VARCHAR(500)", True, "Link to the full text of the judgement, if available."),
+            ColumnDoc("judgement_id", "INT", False, "معرّف فريد للحكم."),
+            ColumnDoc("case_id", "INT", False, "القضية التي صدر فيها هذا الحكم. مفتاح خارجي إلى cases.case_id."),
+            ColumnDoc("judge_id", "INT", False, "القاضي الذي أصدر الحكم. مفتاح خارجي إلى judges.judge_id."),
+            ColumnDoc("decision_date", "DATE", False, "تاريخ صدور الحكم."),
+            ColumnDoc("verdict", "VARCHAR(255)", False, "منطوق الحكم المختصر. القيم المخزَّنة: 'الحكم لصالح المدعي'، 'مدان'."),
+            ColumnDoc("summary", "TEXT", False, "ملخص سردي لحيثيات المحكمة وأسباب قرارها."),
+            ColumnDoc("full_text_url", "VARCHAR(500)", True, "رابط النص الكامل للحكم، إن وُجد."),
         ],
     ),
     TableDoc(
         name="principles",
         description=(
-            "Legal principles (points of law, doctrines, or precedent-setting "
-            "reasoning) established or applied in a judgement, tagged by area_of_law "
-            "(e.g. Contract Law, Criminal Law). Use this table to answer 'what legal "
-            "principle did this case establish' or 'find cases/judgements that "
-            "established principles about X area of law'. Always joined back to a "
-            "single judgement via judgement_id, and from there to its case."
+            "المبادئ القانونية (قواعد قانونية أو مذاهب فقهية أو تسبيب مُنشئ لسابقة قضائية) "
+            "التي أرساها أو طبّقها حكم ما، مصنّفة بحسب مجال القانون (area_of_law) مثل قانون "
+            "العقود أو القانون الجنائي. استخدم هذا الجدول للإجابة عن 'ما المبدأ القانوني "
+            "الذي أرسته هذه القضية' أو 'ابحث عن القضايا والأحكام التي أرست مبادئ في مجال "
+            "قانوني معين'. ويُربط دائمًا بحكم واحد عبر judgement_id، ومنه إلى قضيته."
         ),
         primary_key="principle_id",
         foreign_keys=[ForeignKeyDoc("judgement_id", "judgements", "judgement_id")],
         columns=[
-            ColumnDoc("principle_id", "INT", False, "Unique identifier for the principle."),
-            ColumnDoc("judgement_id", "INT", False, "The judgement that established or applied this principle. Foreign key to judgements.judgement_id."),
-            ColumnDoc("title", "VARCHAR(255)", False, "Short name of the principle, e.g. 'Materiality of Breach'."),
-            ColumnDoc("description", "TEXT", False, "Explanation of the legal principle and its reasoning."),
-            ColumnDoc("area_of_law", "VARCHAR(100)", False, "Legal domain the principle belongs to, e.g. 'Contract Law', 'Criminal Law'."),
+            ColumnDoc("principle_id", "INT", False, "معرّف فريد للمبدأ القانوني."),
+            ColumnDoc("judgement_id", "INT", False, "الحكم الذي أرسى هذا المبدأ أو طبّقه. مفتاح خارجي إلى judgements.judgement_id."),
+            ColumnDoc("title", "VARCHAR(255)", False, "الاسم المختصر للمبدأ، مثل 'جسامة الإخلال'. يُستخدم للعرض؛ للبحث في العنوان استعمل title_norm."),
+            ColumnDoc("description", "TEXT", False, "شرح المبدأ القانوني وتسبيبه."),
+            ColumnDoc("area_of_law", "VARCHAR(100)", False, "المجال القانوني الذي ينتمي إليه المبدأ. القيم المخزَّنة: 'قانون العقود'، 'القانون الجنائي'."),
+            ColumnDoc("title_norm", "VARCHAR(255)", True, "نسخة مُوحَّدة إملائيًا من title يولّدها النظام تلقائيًا. استخدم هذا العمود عند البحث عن مبدأ بعنوانه."),
         ],
     ),
     TableDoc(
         name="legislations",
         description=(
-            "Statutes and acts (written laws) that can be cited by cases, e.g. the "
-            "'Financial Conduct Act' or 'Commercial Contracts Act'. Use this table to "
-            "answer questions about a specific law's title, jurisdiction, enactment "
-            "date, or current status (In Force, Repealed, Amended). To find which "
-            "cases cited a piece of legislation, join through "
-            "case_legislation_citations."
+            "التشريعات والأنظمة والقوانين المكتوبة التي يمكن أن تستند إليها القضايا، مثل "
+            "'Financial Conduct Act' (قانون السلوك المالي) أو 'Commercial Contracts Act' "
+            "(قانون العقود التجارية). استخدم هذا الجدول للإجابة عن الأسئلة المتعلقة بعنوان "
+            "تشريع معين، أو نطاق سريانه، أو تاريخ سنّه، أو حالته الراهنة. ولمعرفة القضايا "
+            "التي استندت إلى تشريع ما، اربط عبر case_legislation_citations."
         ),
         primary_key="legislation_id",
         columns=[
-            ColumnDoc("legislation_id", "INT", False, "Unique identifier for the legislation."),
-            ColumnDoc("title", "VARCHAR(255)", False, "Official title of the statute or act."),
-            ColumnDoc("jurisdiction", "VARCHAR(255)", False, "Jurisdiction the legislation applies to, e.g. 'Federal', 'State'."),
-            ColumnDoc("enactment_date", "DATE", False, "Date the legislation was enacted."),
-            ColumnDoc("status", "ENUM('In Force','Repealed','Amended')", False, "Current legal status of the legislation."),
+            ColumnDoc("legislation_id", "INT", False, "معرّف فريد للتشريع."),
+            ColumnDoc("title", "VARCHAR(255)", False, "العنوان الرسمي للقانون أو النظام، مثل 'قانون السلوك المالي'. يُستخدم للعرض؛ للبحث في العنوان استعمل title_norm."),
+            ColumnDoc("jurisdiction", "VARCHAR(255)", False, "النطاق الذي يسري عليه التشريع. القيم المخزَّنة: 'اتحادي'، 'محلي'."),
+            ColumnDoc("enactment_date", "DATE", False, "تاريخ سنّ التشريع."),
+            ColumnDoc("status", "ENUM('ساري','ملغى','معدل')", False, "الحالة القانونية الراهنة للتشريع. القيم المخزَّنة حصرًا: 'ساري' (ساري المفعول)، 'ملغى'، 'معدل'."),
+            ColumnDoc("title_norm", "VARCHAR(255)", True, "نسخة مُوحَّدة إملائيًا من title يولّدها النظام تلقائيًا. استخدم هذا العمود عند البحث عن تشريع بعنوانه."),
         ],
     ),
     TableDoc(
         name="case_legislation_citations",
         description=(
-            "Junction table linking cases to the legislations (statutes) they cite "
-            "during proceedings, including the specific article/section cited and the "
-            "context of the citation. Use this table to answer 'which laws did case X "
-            "cite', 'which cases cited legislation Y', or 'which section of a statute "
-            "was cited and why'. This is the join hub between cases and legislations."
+            "جدول ربط يصل القضايا بالتشريعات التي استندت إليها أثناء نظرها، ويتضمن المادة "
+            "أو البند المُستنَد إليه وسياق الاستناد. استخدم هذا الجدول للإجابة عن 'ما "
+            "القوانين التي استندت إليها القضية الفلانية'، أو 'ما القضايا التي استندت إلى "
+            "تشريع معين'، أو 'أي مادة من النظام استُند إليها ولماذا'. وهو محور الربط بين "
+            "cases وlegislations."
         ),
         primary_key="citation_id",
         foreign_keys=[
@@ -273,11 +294,11 @@ TABLES: list[TableDoc] = [
             ForeignKeyDoc("legislation_id", "legislations", "legislation_id"),
         ],
         columns=[
-            ColumnDoc("citation_id", "INT", False, "Unique identifier for the citation record."),
-            ColumnDoc("case_id", "INT", False, "The case making the citation. Foreign key to cases.case_id."),
-            ColumnDoc("legislation_id", "INT", False, "The legislation being cited. Foreign key to legislations.legislation_id."),
-            ColumnDoc("article_section", "VARCHAR(100)", True, "Specific article or section of the legislation cited, e.g. 'Section 12'."),
-            ColumnDoc("citation_context", "TEXT", True, "Explanation of why/how the legislation was cited in the case."),
+            ColumnDoc("citation_id", "INT", False, "معرّف فريد لسجل الاستناد."),
+            ColumnDoc("case_id", "INT", False, "القضية التي استندت إلى التشريع. مفتاح خارجي إلى cases.case_id."),
+            ColumnDoc("legislation_id", "INT", False, "التشريع المُستنَد إليه. مفتاح خارجي إلى legislations.legislation_id."),
+            ColumnDoc("article_section", "VARCHAR(100)", True, "المادة أو البند المُستنَد إليه من التشريع، مثل 'المادة 12'."),
+            ColumnDoc("citation_context", "TEXT", True, "شرح سبب الاستناد إلى التشريع في القضية وكيفيته."),
         ],
     ),
 ]
@@ -288,7 +309,8 @@ def build_table_doc_text(table: TableDoc) -> str:
 
     Layout: description first (it carries the most retrieval signal), then a
     structured column list, primary key, and foreign keys the LLM needs to
-    write correct JOINs.
+    write correct JOINs. The labels stay English while the descriptions are
+    Arabic — see this module's language policy.
     """
     lines = [
         f"Table: {table.name}",

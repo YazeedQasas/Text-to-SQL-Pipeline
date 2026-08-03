@@ -35,7 +35,7 @@ def _connect() -> pymysql.connections.Connection:
     )
 
 
-def _execute_select_sync(sql: str) -> tuple[list[str], list[dict]]:
+def _execute_select_sync(sql: str, params: tuple | None = None) -> tuple[list[str], list[dict]]:
     connection = _connect()
     try:
         with connection.cursor() as cursor:
@@ -44,7 +44,7 @@ def _execute_select_sync(sql: str) -> tuple[list[str], list[dict]]:
             except pymysql.MySQLError:
                 pass  # not supported on this server (e.g. MariaDB) — best-effort only
 
-            cursor.execute(sql)
+            cursor.execute(sql, params)
             rows = cursor.fetchall()
             columns = [desc[0] for desc in cursor.description] if cursor.description else []
             return columns, rows
@@ -52,5 +52,12 @@ def _execute_select_sync(sql: str) -> tuple[list[str], list[dict]]:
         connection.close()
 
 
-async def execute_select(sql: str) -> tuple[list[str], list[dict]]:
-    return await run_in_threadpool(_execute_select_sync, sql)
+async def execute_select(sql: str, params: tuple | None = None) -> tuple[list[str], list[dict]]:
+    """Run a read-only SELECT.
+
+    `params` is passed straight to PyMySQL for server-side interpolation, so
+    callers with untrusted values (schema introspection filtering on database
+    name, for example) never build SQL by string concatenation. Existing
+    callers that pass fully-formed SQL are unaffected.
+    """
+    return await run_in_threadpool(_execute_select_sync, sql, params)

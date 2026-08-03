@@ -94,8 +94,13 @@ async def run_pipeline(question: str) -> AsyncIterator[PipelineEvent]:
         sql_chunks.append(chunk)
         yield TokenEvent("sql_generation", chunk)
     raw_sql = llm.strip_code_fences("".join(sql_chunks))
-    if raw_sql.strip().upper() == "NO_QUERY":
-        raise PipelineError("The question could not be answered with the available schema.")
+    refusal = llm.parse_no_query(raw_sql)
+    if refusal is not None:
+        # The model had the full schema in front of it and still could not
+        # answer, so its reason is more specific than anything we could write
+        # here — pass it to the user verbatim.
+        logger.info("SQL generation declined the question: %s | question=%r", refusal, question)
+        raise PipelineError(refusal)
     yield StageEvent("sql_generation", "completed")
 
     yield StageEvent("sql_validation", "started")
