@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import CORS_ALLOW_ORIGINS
+from app.routers.catalog import router as catalog_router
 from app.routers.query import router as query_router
 
 logging.basicConfig(level=logging.INFO)
@@ -19,6 +20,7 @@ app.add_middleware(
 )
 
 app.include_router(query_router)
+app.include_router(catalog_router)
 
 
 @app.get("/health")

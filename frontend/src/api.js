@@ -1,5 +1,41 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
+/** POST JSON and unwrap FastAPI's `detail` on failure. */
+async function postJson(path, body) {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  const data = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    const error = new Error(
+      // `detail` is a string for ordinary errors, but the approval gate returns
+      // a structured object listing which tables it blocked.
+      typeof data?.detail === "string"
+        ? data.detail
+        : data?.detail?.message || `Request failed with status ${response.status}`,
+    );
+    error.status = response.status;
+    error.detail = data?.detail;
+    throw error;
+  }
+
+  return data;
+}
+
+/** Compare live MySQL against the indexed schema docs. Returns reviewed changes. */
+export function scanCatalog() {
+  return postJson("/api/catalog/scan", {});
+}
+
+/** Sync the reviewed changes to Qdrant exactly as submitted. */
+export function approveCatalog(items) {
+  return postJson("/api/catalog/approve", { items });
+}
+
 /**
  * Run a query against the streaming endpoint, reporting progress as it happens.
  *

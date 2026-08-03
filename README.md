@@ -150,7 +150,61 @@ Open http://localhost:5173, type a question (e.g. *"Which cases did Judge
 Amara Okafor preside over?"* or *"What legal principles came out of the
 Marshall v. Acme case?"*), and submit.
 
+## 7. Keeping the index in sync (Schema updates tab)
+
+Once MySQL changes — a new table, a new column, a dropped table — the indexed
+schema docs go stale and the retriever starts answering from an outdated
+picture of the database. The **Schema updates** tab handles that without
+anyone hand-editing `ingestion/schema_docs.py`.
+
+Press **Check for schema updates** and the backend:
+
+1. reads the live structure from `information_schema`;
+2. diffs it against the payloads already in Qdrant (which double as the "as of
+   last ingestion" record — no timestamps or migration log needed);
+3. for each changed table, samples a few real rows and asks the LLM whether a
+   human needs to look: is the table intelligible, does it belong with the
+   rest of the catalog, does its description actually match its data;
+4. returns each change prefilled with a proposed description to edit.
+
+Anything the reviewer flags is shown amber with its reasons, as information.
+Edit the description freely — **whatever you submit is what gets indexed**. The
+LLM's role ends at the scan: it exists to surface junk and to give you a draft
+to start from, not to grade your text. Re-judging edits would make them
+pointless, since a table flagged during the scan could never be cleared no
+matter what was typed. **Approve & sync to Qdrant** only stops you if a table
+has no description at all.
+
+Notes:
+
+- Run `python ingestion/ingest.py` once first, so there is a baseline to diff
+  against. Otherwise the first scan reports the entire schema as new.
+- Views are included alongside base tables, so a computed view like
+  `case_congestion` is queryable by the assistant.
+- If LM Studio is unreachable, tables come back flagged with an empty
+  suggestion rather than silently passing — you still have to write the
+  description yourself.
+- Keep `CATALOG_REVIEW_CONCURRENCY=1` on LM Studio. Concurrent completions from
+  one loaded model come back truncated, which makes every review fail closed
+  with an empty description — a transport failure that looks exactly like a
+  prompt bug.
+- Skipping a table is a per-scan decision and is not remembered; an
+  unresolved table will reappear on the next scan.
+
 ## Design notes
+
+- **Language (Arabic)**: the system is Arabic-facing. Descriptions in
+  `ingestion/schema_docs.py` are Arabic, and the answer and catalog-review
+  prompts produce Arabic. Identifiers — table names, column names, foreign
+  keys — stay English on purpose: the user never sees them, the LLM writes
+  measurably better SQL against them, and it avoids backtick-quoting every
+  identifier in generated queries. The SQL-generation prompt itself is also
+  English, since instruction-following on code generation is more reliable
+  that way; only the rules describing Arabic input/output are localized.
+  ENUM and category columns still store English values (`'Open'`,
+  `'Contract Law'`), so each such column's description glosses them in Arabic
+  — that mapping is what turns "القضايا المفتوحة" into `status = 'Open'`.
+  When the underlying data is migrated to Arabic, update those glosses.
 
 - **Schema retrieval granularity**: every ingested document is table-level
   (`level: "table"` in the Qdrant payload). Column metadata is already fully
@@ -181,6 +235,16 @@ Marshall v. Acme case?"*), and submit.
   context, one to turn the executed query's results into a natural-language
   answer — matching the spec's "results returned to the LLM for a final
   natural-language response."
+- **Off-topic questions are refused at SQL generation, not before it**: vector
+  search always returns its top-k tables, so retrieval cannot tell "off-domain"
+  from "hard" on its own. The obvious fix — an LLM relevance gate in front of
+  the embedding step — was tried and removed: judging on table descriptions
+  alone, it read questions too literally and rejected real ones, because a
+  category the user names in their own words ("القضايا البسيطة") lives in a
+  *column* value ("مخالفات وجنح بسيطة") that the gate never sees. SQL generation
+  is the first step holding the full column list and their permitted values, so
+  it is the first step that can tell the two apart. It answers `NO_QUERY:
+  <سبب عربي>` and the pipeline shows that reason to the user verbatim.
 - **One pipeline, two endpoints**: `services/pipeline.py` is a single async
   generator that yields stage events, LLM token chunks, and finally the
   result. `/api/query/stream` forwards those events; `/api/query` discards
@@ -197,6 +261,12 @@ Marshall v. Acme case?"*), and submit.
 
 - Column-level retrieval (`ingestion/ingest.py::build_column_documents` is a
   stubbed entry point)
+- Column **value profiles**: distinct values for low-cardinality VARCHAR
+  columns (`case_type`, `verdict`, `hearing_type`, `area_of_law`) folded into
+  the table payload, so the LLM filters on real literals instead of inventing
+  them. ENUM columns already expose their values through the type string, so
+  this is only worth doing for the non-ENUM ones — which is where the
+  `COUNT(DISTINCT ...)` cost and a PII skip-list come in.
 - Hybrid dense+sparse Qdrant search
 - Query result caching, auth, multi-turn conversation
 - Cancelling an in-flight run from the UI (the SSE reader is cancelled on

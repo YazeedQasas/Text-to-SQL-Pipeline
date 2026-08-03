@@ -68,6 +68,32 @@ def _events(question: str = "how many cases?") -> list[dict]:
     ]
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("NO_QUERY: لا تتضمن البيانات معلومات عن الطقس.", "لا تتضمن البيانات معلومات عن الطقس."),
+        ("NO_QUERY - no weather data", "no weather data"),
+        ("no_query: لا توجد بيانات.", "لا توجد بيانات."),  # models lowercase it
+        ("NO_QUERY", llm.NO_QUERY_FALLBACK),
+        ('"NO_QUERY: لا توجد بيانات."', "لا توجد بيانات."),  # and quote it
+    ],
+)
+def test_parse_no_query_extracts_the_reason(raw, expected):
+    assert llm.parse_no_query(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT case_id FROM cases",
+        # The token appears in the query, but the query is real — must still run.
+        "SELECT case_id FROM cases WHERE title LIKE '%NO_QUERY%'",
+    ],
+)
+def test_parse_no_query_leaves_real_sql_alone(sql):
+    assert llm.parse_no_query(sql) is None
+
+
 def test_stream_reports_every_stage_in_order(stub_pipeline):
     events = _events()
 
@@ -105,11 +131,40 @@ def test_stream_reports_failure_in_band(stub_pipeline):
     assert error["status_code"] == 422
     assert "No relevant tables" in error["detail"]
     # The stage that failed announced its start but never completed.
-    assert {"type": "stage", "stage": "retrieval", "status": "started", "detail": None} in events
+    assert {
+        "type": "stage",
+        "stage": "retrieval",
+        "status": "started",
+        "detail": None,
+        "content": None,
+    } in events
     assert not any(
         e["type"] == "stage" and e["stage"] == "retrieval" and e["status"] == "completed"
         for e in events
     )
+
+
+def test_refusal_is_reported_with_the_models_own_reason(stub_pipeline):
+    """A question the schema cannot answer stops at SQL generation."""
+    stub_pipeline["sql_parts"] = ["NO_QUERY: ", "لا تتضمن البيانات معلومات عن الطقس."]
+
+    events = _events("ما هو الطقس في عمّان؟")
+
+    error = next(e for e in events if e["type"] == "error")
+    assert error["status_code"] == 422
+    assert error["detail"] == "لا تتضمن البيانات معلومات عن الطقس."
+    # It stopped there: the SQL was never validated or run.
+    assert not any(
+        e["type"] == "stage" and e["stage"] in {"sql_validation", "sql_execution"} for e in events
+    )
+
+
+def test_refusal_without_a_reason_still_says_something_usable(stub_pipeline):
+    stub_pipeline["sql_parts"] = ["NO_QUERY"]
+
+    error = next(e for e in _events() if e["type"] == "error")
+
+    assert error["detail"] == llm.NO_QUERY_FALLBACK
 
 
 def test_non_streaming_endpoint_still_returns_json(stub_pipeline):

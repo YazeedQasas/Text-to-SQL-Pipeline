@@ -1,11 +1,27 @@
 -- =============================================================================
--- Text-to-SQL demo schema — legal domain
+-- Text-to-SQL demo schema — legal domain (Arabic)
 -- =============================================================================
 -- Run against an existing MySQL instance. Creates the database (if missing)
 -- and all tables for the demo. Safe to re-run: uses CREATE TABLE IF NOT EXISTS.
 --
 -- Usage:
---   mysql -h <host> -P <port> -u <admin_user> -p < db/01_schema.sql
+--   mysql -h <host> -P <port> -u <admin_user> -p --default-character-set=utf8mb4 < db/01_schema.sql
+--
+-- Language: identifiers (tables, columns, foreign keys) are English by design —
+-- the user never sees them and the LLM writes better SQL against them. Stored
+-- VALUES are Arabic, including every ENUM. See ingestion/schema_docs.py, which
+-- must list the same ENUM values so generated queries filter on literals that
+-- actually exist.
+--
+-- Every name/title column carries a generated `_norm` twin. MySQL folds Arabic
+-- diacritics but NOT letter variants — 'أحمد' does not match 'احمد' under any
+-- collation — so matching has to run against the normalized column or users who
+-- spell a name differently silently get zero rows. Folding applied:
+--     أ إ آ ٱ -> ا     ة -> ه     ى -> ي     tatweel and harakat removed
+-- (the same set as Lucene's ArabicNormalizationFilter).
+--
+-- To convert an already-populated ENGLISH database instead, see
+-- db/04_migrate_to_arabic.sql.
 -- =============================================================================
 
 CREATE DATABASE IF NOT EXISTS legal_db
@@ -20,7 +36,7 @@ USE legal_db;
 CREATE TABLE IF NOT EXISTS courts (
     court_id      INT AUTO_INCREMENT PRIMARY KEY,
     name          VARCHAR(255) NOT NULL,
-    level         ENUM('Trial', 'Appellate', 'Supreme') NOT NULL,
+    level         ENUM('ابتدائية', 'استئناف', 'عليا') NOT NULL,
     jurisdiction  VARCHAR(255) NOT NULL,
     location      VARCHAR(255) NOT NULL
 ) ENGINE=InnoDB;
@@ -34,7 +50,16 @@ CREATE TABLE IF NOT EXISTS judges (
     title         VARCHAR(100) NOT NULL,
     court_id      INT NOT NULL,
     appointed_date DATE NULL,
-    CONSTRAINT fk_judges_court FOREIGN KEY (court_id) REFERENCES courts(court_id)
+    full_name_norm VARCHAR(255) GENERATED ALWAYS AS (
+        REGEXP_REPLACE(
+            REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                LOWER(TRIM(full_name)),
+                'أ', 'ا'), 'إ', 'ا'), 'آ', 'ا'), 'ٱ', 'ا'),
+                'ة', 'ه'), 'ى', 'ي'), 'ـ', ''),
+            '[ًٌٍَُِّْٰٕٓٔ]', '')
+    ) STORED,
+    CONSTRAINT fk_judges_court FOREIGN KEY (court_id) REFERENCES courts(court_id),
+    INDEX idx_judges_full_name_norm (full_name_norm)
 ) ENGINE=InnoDB;
 
 -- -----------------------------------------------------------------------------
@@ -44,7 +69,16 @@ CREATE TABLE IF NOT EXISTS lawyers (
     lawyer_id     INT AUTO_INCREMENT PRIMARY KEY,
     full_name     VARCHAR(255) NOT NULL,
     bar_number    VARCHAR(50) NOT NULL UNIQUE,
-    firm_name     VARCHAR(255) NULL
+    firm_name     VARCHAR(255) NULL,
+    full_name_norm VARCHAR(255) GENERATED ALWAYS AS (
+        REGEXP_REPLACE(
+            REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                LOWER(TRIM(full_name)),
+                'أ', 'ا'), 'إ', 'ا'), 'آ', 'ا'), 'ٱ', 'ا'),
+                'ة', 'ه'), 'ى', 'ي'), 'ـ', ''),
+            '[ًٌٍَُِّْٰٕٓٔ]', '')
+    ) STORED,
+    INDEX idx_lawyers_full_name_norm (full_name_norm)
 ) ENGINE=InnoDB;
 
 -- -----------------------------------------------------------------------------
@@ -53,8 +87,17 @@ CREATE TABLE IF NOT EXISTS lawyers (
 CREATE TABLE IF NOT EXISTS parties (
     party_id      INT AUTO_INCREMENT PRIMARY KEY,
     name          VARCHAR(255) NOT NULL,
-    party_type    ENUM('Individual', 'Organization') NOT NULL,
-    contact_info  VARCHAR(255) NULL
+    party_type    ENUM('شخص طبيعي', 'جهة اعتبارية') NOT NULL,
+    contact_info  VARCHAR(255) NULL,
+    name_norm     VARCHAR(255) GENERATED ALWAYS AS (
+        REGEXP_REPLACE(
+            REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                LOWER(TRIM(name)),
+                'أ', 'ا'), 'إ', 'ا'), 'آ', 'ا'), 'ٱ', 'ا'),
+                'ة', 'ه'), 'ى', 'ي'), 'ـ', ''),
+            '[ًٌٍَُِّْٰٕٓٔ]', '')
+    ) STORED,
+    INDEX idx_parties_name_norm (name_norm)
 ) ENGINE=InnoDB;
 
 -- -----------------------------------------------------------------------------
@@ -67,8 +110,17 @@ CREATE TABLE IF NOT EXISTS cases (
     court_id      INT NOT NULL,
     case_type     VARCHAR(100) NOT NULL,
     filing_date   DATE NOT NULL,
-    status        ENUM('Open', 'Closed', 'On Appeal', 'Dismissed') NOT NULL DEFAULT 'Open',
-    CONSTRAINT fk_cases_court FOREIGN KEY (court_id) REFERENCES courts(court_id)
+    status        ENUM('مفتوحة', 'مغلقة', 'قيد الاستئناف', 'مشطوبة') NOT NULL DEFAULT 'مفتوحة',
+    title_norm    VARCHAR(500) GENERATED ALWAYS AS (
+        REGEXP_REPLACE(
+            REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                LOWER(TRIM(title)),
+                'أ', 'ا'), 'إ', 'ا'), 'آ', 'ا'), 'ٱ', 'ا'),
+                'ة', 'ه'), 'ى', 'ي'), 'ـ', ''),
+            '[ًٌٍَُِّْٰٕٓٔ]', '')
+    ) STORED,
+    CONSTRAINT fk_cases_court FOREIGN KEY (court_id) REFERENCES courts(court_id),
+    INDEX idx_cases_title_norm (title_norm)
 ) ENGINE=InnoDB;
 
 -- -----------------------------------------------------------------------------
@@ -79,7 +131,7 @@ CREATE TABLE IF NOT EXISTS case_parties (
     case_party_id INT AUTO_INCREMENT PRIMARY KEY,
     case_id       INT NOT NULL,
     party_id      INT NOT NULL,
-    role          ENUM('Plaintiff', 'Defendant', 'Appellant', 'Respondent', 'Third Party') NOT NULL,
+    role          ENUM('مدعي', 'مدعى عليه', 'مستأنف', 'مستأنف ضده', 'طرف ثالث') NOT NULL,
     lawyer_id     INT NULL,
     CONSTRAINT fk_cp_case   FOREIGN KEY (case_id) REFERENCES cases(case_id),
     CONSTRAINT fk_cp_party  FOREIGN KEY (party_id) REFERENCES parties(party_id),
@@ -124,7 +176,16 @@ CREATE TABLE IF NOT EXISTS principles (
     title         VARCHAR(255) NOT NULL,
     description   TEXT NOT NULL,
     area_of_law   VARCHAR(100) NOT NULL,
-    CONSTRAINT fk_principles_judgement FOREIGN KEY (judgement_id) REFERENCES judgements(judgement_id)
+    title_norm    VARCHAR(255) GENERATED ALWAYS AS (
+        REGEXP_REPLACE(
+            REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                LOWER(TRIM(title)),
+                'أ', 'ا'), 'إ', 'ا'), 'آ', 'ا'), 'ٱ', 'ا'),
+                'ة', 'ه'), 'ى', 'ي'), 'ـ', ''),
+            '[ًٌٍَُِّْٰٕٓٔ]', '')
+    ) STORED,
+    CONSTRAINT fk_principles_judgement FOREIGN KEY (judgement_id) REFERENCES judgements(judgement_id),
+    INDEX idx_principles_title_norm (title_norm)
 ) ENGINE=InnoDB;
 
 -- -----------------------------------------------------------------------------
@@ -135,7 +196,16 @@ CREATE TABLE IF NOT EXISTS legislations (
     title           VARCHAR(255) NOT NULL,
     jurisdiction    VARCHAR(255) NOT NULL,
     enactment_date  DATE NOT NULL,
-    status          ENUM('In Force', 'Repealed', 'Amended') NOT NULL DEFAULT 'In Force'
+    status          ENUM('ساري', 'ملغى', 'معدل') NOT NULL DEFAULT 'ساري',
+    title_norm      VARCHAR(255) GENERATED ALWAYS AS (
+        REGEXP_REPLACE(
+            REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                LOWER(TRIM(title)),
+                'أ', 'ا'), 'إ', 'ا'), 'آ', 'ا'), 'ٱ', 'ا'),
+                'ة', 'ه'), 'ى', 'ي'), 'ـ', ''),
+            '[ًٌٍَُِّْٰٕٓٔ]', '')
+    ) STORED,
+    INDEX idx_legislations_title_norm (title_norm)
 ) ENGINE=InnoDB;
 
 -- -----------------------------------------------------------------------------
