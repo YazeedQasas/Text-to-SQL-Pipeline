@@ -1,6 +1,7 @@
 import json
 import logging
 from collections.abc import AsyncIterator
+from dataclasses import asdict
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
@@ -11,6 +12,7 @@ from app.services.pipeline import (
     PipelineError,
     StageEvent,
     TokenEvent,
+    UsageEvent,
     run_pipeline,
 )
 
@@ -27,7 +29,7 @@ async def run_query(request: QueryRequest) -> QueryResponse:
     progress while the pipeline runs.
     """
     try:
-        async for event in run_pipeline(request.question):
+        async for event in run_pipeline(request.question, request.history):
             if isinstance(event, QueryResponse):
                 return event
     except PipelineError as exc:
@@ -50,6 +52,9 @@ async def run_query_stream(request: QueryRequest) -> StreamingResponse:
                                        ("content" is the full text behind
                                         "detail", or null — see StageEvent)
       {"type": "token",  "stage", "text"}                    partial LLM output
+      {"type": "usage",  "usage": {used_tokens, limit_tokens, history_turns}}
+                                       once, as soon as the prompt is costed —
+                                       arrives even when the turn then fails
       {"type": "result", "result": <QueryResponse>}          on success
       {"type": "error",  "detail", "status_code"}            on failure
 
@@ -60,7 +65,7 @@ async def run_query_stream(request: QueryRequest) -> StreamingResponse:
     async def event_stream() -> AsyncIterator[str]:
         yield _sse({"type": "stages", "stages": STAGES})
         try:
-            async for event in run_pipeline(request.question):
+            async for event in run_pipeline(request.question, request.history):
                 if isinstance(event, StageEvent):
                     yield _sse(
                         {
@@ -73,6 +78,8 @@ async def run_query_stream(request: QueryRequest) -> StreamingResponse:
                     )
                 elif isinstance(event, TokenEvent):
                     yield _sse({"type": "token", "stage": event.stage, "text": event.text})
+                elif isinstance(event, UsageEvent):
+                    yield _sse({"type": "usage", "usage": asdict(event)})
                 else:
                     yield _sse({"type": "result", "result": event.model_dump(mode="json")})
         except PipelineError as exc:

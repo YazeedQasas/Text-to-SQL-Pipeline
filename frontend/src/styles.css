@@ -1,14 +1,100 @@
+html,
+body,
+#root {
+  height: 100%;
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #f6f7f9;
+  background: #ffffff;
   margin: 0;
-  padding: 2rem;
   color: #1a1a1a;
 }
 
+/* --- Shell ----------------------------------------------------------------- */
+
+.shell {
+  display: flex;
+  height: 100%;
+}
+
+.sidebar {
+  width: 15rem;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.75rem;
+  background: #f9f9f9;
+  border-right: 1px solid #e8e8e8;
+}
+
+.brand {
+  font-weight: 600;
+  font-size: 0.95rem;
+  padding: 0.6rem 0.7rem 1.1rem;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  font: inherit;
+  font-size: 0.9rem;
+  color: #3a3a3a;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nav-item:hover {
+  background: #ededed;
+}
+
+.nav-item-active {
+  background: #e6e6e6;
+  color: #1a1a1a;
+  font-weight: 600;
+}
+
+.nav-icon {
+  font-size: 0.95rem;
+}
+
+.main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  /* Lets the chat scroller shrink instead of pushing the composer off-screen. */
+  min-height: 0;
+}
+
+/* `hidden` alone loses to the display rules above, so restate it. */
+.pane[hidden] {
+  display: none;
+}
+
+.pane-scroll {
+  overflow-y: auto;
+}
+
 .page {
-  max-width: 720px;
+  width: 100%;
+  max-width: 780px;
   margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
+  box-sizing: border-box;
 }
 
 .subtitle {
@@ -16,44 +102,374 @@ body {
   margin-top: -0.5rem;
 }
 
-.query-form {
+/* --- Chat ------------------------------------------------------------------ */
+
+.chat {
   display: flex;
-  gap: 0.5rem;
-  margin: 1.5rem 0;
-}
-
-.query-form input {
+  flex-direction: column;
   flex: 1;
-  padding: 0.6rem 0.8rem;
-  font-size: 1rem;
-  border: 1px solid #ccc;
-  border-radius: 6px;
+  min-height: 0;
 }
 
-.query-form button {
-  padding: 0.6rem 1.2rem;
-  font-size: 1rem;
-  border: none;
-  border-radius: 6px;
-  background: #2b6cb0;
-  color: white;
+.chat-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 2.6rem;
+  padding: 0.4rem 1.5rem;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.meter {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.meter-track {
+  width: 7rem;
+  height: 0.35rem;
+  border-radius: 999px;
+  background: #ededed;
+  overflow: hidden;
+}
+
+.meter-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: #4a4a4a;
+  transition: width 0.3s ease;
+}
+
+.meter-fill-high {
+  background: #c2410c;
+}
+
+.meter-label {
+  font-size: 0.75rem;
+  color: #8e8e8e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.new-chat {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 999px;
+  background: #fff;
+  font: inherit;
+  font-size: 0.8rem;
+  color: #3a3a3a;
   cursor: pointer;
 }
 
-.query-form button:disabled {
-  background: #9db8d6;
+.new-chat:hover:not(:disabled) {
+  background: #f5f5f5;
+}
+
+.new-chat:disabled {
+  color: #bdbdbd;
   cursor: not-allowed;
+}
+
+.context-full {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  max-width: 48rem;
+  margin: 0 auto 0.6rem;
+  padding: 0.65rem 0.9rem;
+  border: 1px solid #f0d8a8;
+  border-radius: 0.9rem;
+  background: #fffaf0;
+  font-size: 0.82rem;
+  color: #7a4f01;
+}
+
+.context-full button {
+  flex-shrink: 0;
+  padding: 0.3rem 0.7rem;
+  border: 1px solid #d9a441;
+  border-radius: 999px;
+  background: #fff;
+  font: inherit;
+  font-size: 0.78rem;
+  color: #7a4f01;
+  cursor: pointer;
+}
+
+.chat-scroller {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.chat-column {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 1rem;
+}
+
+.chat-empty {
+  min-height: 55vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.chat-empty h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.6rem;
+}
+
+.chat-empty p {
+  margin: 0;
+  color: #6b6b6b;
+  font-size: 0.92rem;
+  line-height: 1.6;
+}
+
+.suggestions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 1.75rem;
+}
+
+.suggestion-chip {
+  padding: 0.7rem 0.95rem;
+  border: 1px solid #e4e4e4;
+  border-radius: 0.9rem;
+  background: #fff;
+  font: inherit;
+  font-size: 0.9rem;
+  color: #333;
+  text-align: start;
+  cursor: pointer;
+}
+
+.suggestion-chip:hover {
+  background: #f7f7f7;
+  border-color: #d0d0d0;
+}
+
+.turn {
+  margin-bottom: 2.25rem;
+}
+
+.turn-user {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 1.25rem;
+}
+
+.bubble {
+  max-width: 75%;
+  padding: 0.7rem 1.05rem;
+  border-radius: 1.25rem;
+  background: #f4f4f4;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.answer {
+  font-size: 1rem;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  margin: 0;
+}
+
+/* Blinking caret while the model is still writing the answer. */
+.answer-streaming::after {
+  content: "▍";
+  color: #8e8e8e;
+  animation: caret-blink 1s step-end infinite;
+}
+
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Collapsed pipeline stages, once the turn has finished. */
+.steps {
+  margin-bottom: 0.85rem;
+  font-size: 0.82rem;
+  color: #8e8e8e;
+}
+
+.steps > summary {
+  width: fit-content;
+  list-style: none;
+  cursor: pointer;
+}
+
+.steps > summary::-webkit-details-marker {
+  display: none;
+}
+
+.steps > summary::before {
+  content: "▸ ";
+}
+
+.steps[open] > summary::before {
+  content: "▾ ";
+}
+
+.steps > summary:hover {
+  color: #1a1a1a;
+}
+
+.turn-details {
+  margin-top: 1rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid #f0f0f0;
+}
+
+.turn-details > details {
+  margin: 0.2rem 0;
+  font-size: 0.82rem;
+}
+
+.turn-details summary {
+  padding: 0.15rem 0;
+  color: #6b6b6b;
+  cursor: pointer;
+}
+
+.turn-details summary:hover {
+  color: #1a1a1a;
+}
+
+.turn-details ul {
+  margin: 0.4rem 0;
+  padding-left: 1.2rem;
+  line-height: 1.6;
+}
+
+/* --- Composer -------------------------------------------------------------- */
+
+.composer-area {
+  padding: 0.5rem 1.5rem 1.25rem;
+}
+
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 0.5rem 0.5rem 0.5rem 1rem;
+  border: 1px solid #dcdcdc;
+  border-radius: 1.6rem;
+  background: #fff;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+}
+
+.composer:focus-within {
+  border-color: #b4b4b4;
+}
+
+.composer textarea {
+  flex: 1;
+  min-width: 0;
+  max-height: 200px;
+  padding: 0.35rem 0;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  font: inherit;
+  font-size: 1rem;
+  line-height: 1.5;
+  overflow-y: auto;
+}
+
+.composer textarea:disabled {
+  color: #9a9a9a;
+  cursor: not-allowed;
+}
+
+.composer button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 2.15rem;
+  height: 2.15rem;
+  border: none;
+  border-radius: 50%;
+  background: #1a1a1a;
+  color: #fff;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.composer button:disabled {
+  background: #dadada;
+  cursor: not-allowed;
+}
+
+.composer button.stop {
+  background: #1a1a1a;
+}
+
+.composer button.stop:hover {
+  background: #333;
+}
+
+.stop-icon {
+  width: 0.72rem;
+  height: 0.72rem;
+  border-radius: 2px;
+  background: #fff;
+}
+
+.cancelled-note {
+  margin: 0.6rem 0 0;
+  font-size: 0.8rem;
+  color: #8e8e8e;
+}
+
+.spinner {
+  width: 0.85rem;
+  height: 0.85rem;
+  border: 2px solid rgba(0, 0, 0, 0.18);
+  border-top-color: #6b6b6b;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.composer-hint {
+  max-width: 48rem;
+  margin: 0.55rem auto 0;
+  text-align: center;
+  font-size: 0.72rem;
+  color: #9a9a9a;
 }
 
 /* --- Pipeline progress ---------------------------------------------------- */
 
 .stages {
   list-style: none;
-  margin: 0 0 1.5rem;
-  padding: 1rem 1.25rem;
-  background: white;
-  border: 1px solid #e2e2e2;
-  border-radius: 8px;
+  margin: 0 0 1rem;
+  padding: 0.85rem 1.1rem;
+  background: #fafafa;
+  border: 1px solid #ededed;
+  border-radius: 10px;
 }
 
 .stage {
@@ -63,7 +479,7 @@ body {
   gap: 0 0.6rem;
   padding: 0.3rem 0;
   color: #9aa0a6;
-  font-size: 0.92rem;
+  font-size: 0.9rem;
 }
 
 .stage-icon {
@@ -148,7 +564,9 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .stage-active .stage-icon {
+  .stage-active .stage-icon,
+  .answer-streaming::after,
+  .spinner {
     animation: none;
   }
 }
@@ -158,77 +576,16 @@ body {
   border: 1px solid #f5b5b5;
   color: #9b1c1c;
   padding: 0.75rem 1rem;
-  border-radius: 6px;
+  border-radius: 8px;
   margin-bottom: 1rem;
 }
 
-.result {
-  background: white;
-  border: 1px solid #e2e2e2;
-  border-radius: 8px;
-  padding: 1.5rem;
-}
-
-.answer {
-  font-size: 1.05rem;
-  line-height: 1.5;
-  white-space: pre-wrap;
-}
-
-/* Blinking caret while the model is still writing the answer. */
-.answer-streaming::after {
-  content: "▍";
-  color: #2b6cb0;
-  animation: caret-blink 1s step-end infinite;
-}
-
-@keyframes caret-blink {
-  50% {
-    opacity: 0;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .answer-streaming::after {
-    animation: none;
-  }
-}
-
 pre {
-  background: #f0f0f0;
+  background: #f5f5f5;
   padding: 0.75rem;
   border-radius: 6px;
   overflow-x: auto;
   font-size: 0.85rem;
-}
-
-/* --- Tabs ------------------------------------------------------------------ */
-
-.tabs {
-  display: flex;
-  gap: 0.25rem;
-  border-bottom: 1px solid #e2e2e2;
-  margin: 1rem 0 1.25rem;
-}
-
-.tab {
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  padding: 0.5rem 0.9rem;
-  font-size: 0.95rem;
-  color: #555;
-  cursor: pointer;
-}
-
-.tab:hover {
-  color: #1a1a1a;
-}
-
-.tab-active {
-  color: #2b6cb0;
-  border-bottom-color: #2b6cb0;
-  font-weight: 600;
 }
 
 /* --- Schema catalog review ------------------------------------------------- */
@@ -418,4 +775,34 @@ pre {
 .catalog-footer .approve:disabled {
   background: #c3ccd6;
   cursor: not-allowed;
+}
+
+/* --- Narrow screens -------------------------------------------------------- */
+
+@media (max-width: 640px) {
+  .shell {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    flex-direction: row;
+    align-items: center;
+    width: auto;
+    gap: 0.35rem;
+    padding: 0.5rem 0.75rem;
+    border-right: none;
+    border-bottom: 1px solid #e8e8e8;
+  }
+
+  .brand {
+    padding: 0 0.5rem 0 0;
+  }
+
+  .nav-item {
+    width: auto;
+  }
+
+  .bubble {
+    max-width: 88%;
+  }
 }

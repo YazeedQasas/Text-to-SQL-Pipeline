@@ -11,11 +11,16 @@ import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
-from app.models import QueryResponse, RetrievedTable
-from app.services import llm
+from app.models import ContextUsage, HistoryTurn, QueryResponse, RetrievedTable
+from app.services import context, llm
 from app.services.db import execute_select
 from app.services.embeddings import embed_text
-from app.services.retrieval import format_tables_for_prompt, search_tables
+from app.services.retrieval import (
+    format_concepts_for_prompt,
+    format_tables_for_prompt,
+    search_concepts,
+    search_with_carryover,
+)
 from app.services.sql_guard import SQLGuardError, enforce_select_only
 
 logger = logging.getLogger(__name__)
@@ -25,6 +30,7 @@ logger = logging.getLogger(__name__)
 # duplicating this definition in the frontend.
 STAGES: list[dict[str, str]] = [
     {"id": "embedding", "label": "Embedding your question"},
+    {"id": "concepts", "label": "Matching domain terms"},
     {"id": "retrieval", "label": "Searching the schema index"},
     {"id": "prompt", "label": "Building the schema prompt"},
     {"id": "sql_generation", "label": "Generating SQL"},
@@ -61,16 +67,62 @@ class TokenEvent:
     text: str
 
 
-PipelineEvent = StageEvent | TokenEvent | QueryResponse
+@dataclass
+class UsageEvent:
+    """How full the context window is, emitted as soon as the prompt is costed.
+
+    Sent before the LLM calls rather than only with the result, so the meter has
+    a value even when a turn fails — including the turn that fails *because* the
+    window is full, which is exactly when the user needs to see it.
+    """
+
+    used_tokens: int
+    limit_tokens: int
+    history_turns: int
 
 
-async def run_pipeline(question: str) -> AsyncIterator[PipelineEvent]:
+PipelineEvent = StageEvent | TokenEvent | UsageEvent | QueryResponse
+
+
+CONTEXT_FULL_MESSAGE = (
+    "امتلأت ذاكرة المحادثة. ابدأ محادثة جديدة للمتابعة."
+    " (Conversation context is full — start a new chat.)"
+)
+
+
+async def run_pipeline(
+    question: str, history: list[HistoryTurn] | None = None
+) -> AsyncIterator[PipelineEvent]:
+    # The browser replays the transcript; the backend keeps no session state.
+    history = context.trim_history(list(history or []))
+
     yield StageEvent("embedding", "started")
     query_vector = await embed_text(question)
     yield StageEvent("embedding", "completed", f"{len(query_vector)}-dimension vector")
 
+    # Runs before retrieval rather than alongside it: a matched concept steers
+    # which tables are chosen, so the schema search needs the result. The cost
+    # is one Qdrant search over a glossary of a few dozen points, which is
+    # nothing next to the two LLM calls further down.
+    yield StageEvent("concepts", "started")
+    concepts = await search_concepts(query_vector)
+    glossary = format_concepts_for_prompt(concepts)
+    yield StageEvent(
+        "concepts",
+        "completed",
+        # Most questions contain no domain term at all, and the empty case is
+        # the expected one — say so plainly rather than showing a bare "0".
+        ", ".join(f"{c.term} ({c.score:.2f})" for c in concepts)
+        if concepts
+        else "no domain terms matched",
+        content=glossary or None,
+    )
+
     yield StageEvent("retrieval", "started")
-    tables = await search_tables(query_vector)
+    # The last turn's tables are the ones the conversation is about; a follow-up
+    # that names none of them would otherwise retrieve past its own subject.
+    carry = list(history[-1].table_names) if history else []
+    tables = await search_with_carryover(query_vector, carry, concepts)
     if not tables:
         raise PipelineError("No relevant tables found for this question.")
     yield StageEvent(
@@ -81,16 +133,38 @@ async def run_pipeline(question: str) -> AsyncIterator[PipelineEvent]:
 
     yield StageEvent("prompt", "started")
     schema_context = format_tables_for_prompt(tables)
+
+    # Cost the real prompt rather than an approximation of it, and refuse before
+    # LM Studio has to truncate. Overflow there drops the head of the prompt —
+    # the schema — so the model would answer with invented columns instead of
+    # reporting that it lost the thread.
+    sql_messages = llm.build_sql_messages(question, schema_context, history, glossary)
+    budget = context.measure(sql_messages, len(history))
+    yield UsageEvent(
+        used_tokens=budget.used_tokens,
+        limit_tokens=budget.limit_tokens,
+        history_turns=budget.history_turns,
+    )
+    if budget.exhausted:
+        logger.info(
+            "Refused: context full at %d/%d tokens over %d turns",
+            budget.used_tokens,
+            budget.limit_tokens,
+            budget.history_turns,
+        )
+        raise PipelineError(CONTEXT_FULL_MESSAGE, status_code=413)
+
     yield StageEvent(
         "prompt",
         "completed",
-        f"{len(schema_context)} characters of schema context",
+        f"{len(schema_context)} characters of schema context · "
+        f"{budget.used_tokens}/{budget.limit_tokens} tokens, {len(history)} past turns",
         content=schema_context,
     )
 
     yield StageEvent("sql_generation", "started")
     sql_chunks: list[str] = []
-    async for chunk in llm.stream_sql(question, schema_context):
+    async for chunk in llm.stream_sql(question, schema_context, history, glossary):
         sql_chunks.append(chunk)
         yield TokenEvent("sql_generation", chunk)
     raw_sql = llm.strip_code_fences("".join(sql_chunks))
@@ -121,11 +195,23 @@ async def run_pipeline(question: str) -> AsyncIterator[PipelineEvent]:
 
     yield StageEvent("answer_generation", "started")
     answer_chunks: list[str] = []
-    async for chunk in llm.stream_answer(question, safe_sql, columns, rows):
+    async for chunk in llm.stream_answer(question, safe_sql, columns, rows, history):
         answer_chunks.append(chunk)
         yield TokenEvent("answer_generation", chunk)
     answer = "".join(answer_chunks).strip()
     yield StageEvent("answer_generation", "completed")
+
+    # Report what the *next* turn will start from: this exchange is about to
+    # join the history the browser replays.
+    next_budget = context.measure(
+        llm.build_sql_messages(
+            question,
+            schema_context,
+            [*history, HistoryTurn(question=question, sql=safe_sql, answer=answer)],
+            glossary,
+        ),
+        len(history) + 1,
+    )
 
     yield QueryResponse(
         answer=answer,
@@ -136,4 +222,9 @@ async def run_pipeline(question: str) -> AsyncIterator[PipelineEvent]:
             RetrievedTable(table_name=t.table_name, description=t.description, score=t.score)
             for t in tables
         ],
+        usage=ContextUsage(
+            used_tokens=next_budget.used_tokens,
+            limit_tokens=next_budget.limit_tokens,
+            history_turns=next_budget.history_turns,
+        ),
     )

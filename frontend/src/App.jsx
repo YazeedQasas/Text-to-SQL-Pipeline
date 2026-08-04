@@ -1,40 +1,47 @@
 import { useState } from "react";
 import CatalogPanel from "./CatalogPanel";
-import QueryPanel from "./QueryPanel";
+import ChatPanel from "./ChatPanel";
 
-const TABS = [
-  { id: "ask", label: "Ask" },
-  { id: "schema", label: "Schema updates" },
+const PAGES = [
+  { id: "ask", label: "Ask", icon: "💬" },
+  { id: "schema", label: "Schema updates", icon: "🗂" },
 ];
 
 export default function App() {
-  const [tab, setTab] = useState("ask");
+  const [page, setPage] = useState("ask");
 
   return (
-    <div className="page">
-      <h1>Text-to-SQL — test harness</h1>
-
-      <nav className="tabs">
-        {TABS.map(({ id, label }) => (
+    <div className="shell">
+      <nav className="sidebar">
+        <div className="brand">Text-to-SQL</div>
+        {PAGES.map(({ id, label, icon }) => (
           <button
             key={id}
             type="button"
-            className={`tab${tab === id ? " tab-active" : ""}`}
-            onClick={() => setTab(id)}
+            className={`nav-item${page === id ? " nav-item-active" : ""}`}
+            onClick={() => setPage(id)}
           >
+            <span className="nav-icon" aria-hidden="true">
+              {icon}
+            </span>
             {label}
           </button>
         ))}
       </nav>
 
-      {/* Both panels stay mounted so switching tabs mid-review doesn't discard
-          the scan results or an in-flight answer. */}
-      <div hidden={tab !== "ask"}>
-        <QueryPanel />
-      </div>
-      <div hidden={tab !== "schema"}>
-        <CatalogPanel />
-      </div>
+      {/* Both panels stay mounted so switching pages mid-review doesn't discard
+          the scan results, the transcript, or an in-flight answer. */}
+      <main className="main">
+        <div className="pane" hidden={page !== "ask"}>
+          <ChatPanel />
+        </div>
+        <div className="pane pane-scroll" hidden={page !== "schema"}>
+          <div className="page">
+            <h1>Schema updates</h1>
+            <CatalogPanel />
+          </div>
+        </div>
+      </main>
     </div>
   );
 }
