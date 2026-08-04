@@ -113,10 +113,12 @@ def stub_two_collections(monkeypatch):
     """Stub both collections, so concept search and schema search are separable."""
     state = {
         "schema_hits": ["cases", "hearings", "judges", "courts", "parties"],
-        "concept_hits": [],
+        # Payloads in the glossary collection; `gram_scores` maps a term to the
+        # score its best question-fragment achieved.
+        "concepts": [],
+        "gram_scores": {},
         "exists": True,
         "search_limit": None,
-        "threshold": None,
         "scrolled": [],
     }
 
@@ -124,26 +126,36 @@ def stub_two_collections(monkeypatch):
         return state["exists"]
 
     async def fake_search(collection_name, query_vector, limit, **kwargs):
-        if collection_name == retrieval.QDRANT_CONCEPTS_COLLECTION:
-            state["threshold"] = kwargs.get("score_threshold")
-            return [
-                SimpleNamespace(payload=payload, score=0.9 - index / 100)
-                for index, payload in enumerate(state["concept_hits"])
-            ]
         state["search_limit"] = limit
         return [
             SimpleNamespace(payload=_payload(name), score=0.9 - index / 100)
             for index, name in enumerate(state["schema_hits"])
         ]
 
-    async def fake_scroll(collection_name, scroll_filter, limit, **kwargs):
-        names = _names_in(scroll_filter)
+    async def fake_search_batch(collection_name, requests, **kwargs):
+        # Every fragment returns the same best-scoring concept; the module is
+        # responsible for taking the max and applying the threshold.
+        hits = [
+            SimpleNamespace(payload=p, score=state["gram_scores"].get(p["term"], 0.0))
+            for p in state["concepts"]
+        ]
+        hits.sort(key=lambda h: -h.score)
+        return [hits[:1] for _ in requests]
+
+    async def fake_scroll(collection_name, **kwargs):
+        if collection_name == retrieval.QDRANT_CONCEPTS_COLLECTION:
+            return [SimpleNamespace(payload=p) for p in state["concepts"]], None
+        names = _names_in(kwargs["scroll_filter"])
         state["scrolled"].append(names)
         return [SimpleNamespace(payload=_payload(name)) for name in names], None
 
     monkeypatch.setattr(retrieval._client, "collection_exists", fake_collection_exists)
     monkeypatch.setattr(retrieval._client, "search", fake_search)
+    monkeypatch.setattr(retrieval._client, "search_batch", fake_search_batch)
     monkeypatch.setattr(retrieval._client, "scroll", fake_scroll)
+    # The glossary is cached across requests; every test starts from a clean one.
+    monkeypatch.setattr(retrieval, "_concept_cache", None)
+    monkeypatch.setattr(retrieval, "_concept_cache_loaded_at", 0.0)
     return state
 
 
@@ -151,16 +163,70 @@ def test_missing_concepts_collection_is_not_an_error(stub_two_collections):
     """The glossary is optional: a deployment that never ingested it still answers."""
     stub_two_collections["exists"] = False
 
-    assert asyncio.run(retrieval.search_concepts([0.1] * 8)) == []
+    assert asyncio.run(retrieval.search_concepts("أي سؤال", [])) == []
 
 
-def test_concept_search_passes_the_threshold_to_qdrant(stub_two_collections):
-    """Abstaining is delegated to Qdrant, not filtered afterwards."""
-    stub_two_collections["concept_hits"] = [_concept_payload("المدورة", ["cases"])]
+def test_a_term_written_in_the_question_is_matched_without_any_vector(stub_two_collections):
+    """The lexical signal: free, exact, and unaffected by question length."""
+    stub_two_collections["concepts"] = [_concept_payload("القضايا المدورة", ["cases"])]
 
-    asyncio.run(retrieval.search_concepts([0.1] * 8))
+    # No gram vectors at all — the vector signal cannot contribute here.
+    found = asyncio.run(
+        retrieval.search_concepts("أي محكمة لديها أكبر عدد من القضايا المدورة؟", [])
+    )
 
-    assert stub_two_collections["threshold"] == retrieval.CONCEPT_SCORE_THRESHOLD
+    assert [c.term for c in found] == ["القضايا المدورة"]
+    assert found[0].matched_by == "lexical"
+
+
+def test_lexical_match_survives_spelling_and_the_definite_article(stub_two_collections):
+    """Normalization is what lets a question's spelling reach the stored term."""
+    stub_two_collections["concepts"] = [_concept_payload("المستدعى ضده", ["case_parties"])]
+
+    found = asyncio.run(retrieval.search_concepts("من يمثل مستدعي ضده في هذه؟", []))
+
+    assert [c.term for c in found] == ["المستدعى ضده"]
+
+
+def test_vector_signal_catches_a_term_the_question_does_not_spell_out(stub_two_collections):
+    """The morphology case lexical misses — e.g. a plural of a singular term."""
+    stub_two_collections["concepts"] = [_concept_payload("التشريع الساري", ["legislations"])]
+    stub_two_collections["gram_scores"] = {"التشريع الساري": 0.61}
+
+    found = asyncio.run(
+        retrieval.search_concepts("ما التشريعات السارية؟", [("التشريعات السارية", [0.1] * 8)])
+    )
+
+    assert [c.term for c in found] == ["التشريع الساري"]
+    assert found[0].matched_by == "vector"
+
+
+def test_a_fragment_below_the_threshold_is_abstained_on(stub_two_collections):
+    """Only an absolute threshold can say "nothing here is relevant"."""
+    stub_two_collections["concepts"] = [_concept_payload("القضايا البسيطة", ["cases"])]
+    stub_two_collections["gram_scores"] = {"القضايا البسيطة": 0.51}
+
+    found = asyncio.run(
+        retrieval.search_concepts("ما هي عناوين القضايا المدنية؟", [("عناوين القضايا", [0.1] * 8)])
+    )
+
+    assert found == []
+
+
+def test_lexical_hits_lead_so_they_claim_the_boost_slots_first(stub_two_collections):
+    stub_two_collections["concepts"] = [
+        _concept_payload("القضايا المدورة", ["cases"]),
+        _concept_payload("التشريع الساري", ["legislations"]),
+    ]
+    stub_two_collections["gram_scores"] = {"التشريع الساري": 0.99}
+
+    found = asyncio.run(
+        retrieval.search_concepts("القضايا المدورة والتشريعات", [("التشريعات", [0.1] * 8)])
+    )
+
+    # The vector hit scores higher, but a term written outright still leads.
+    assert [c.matched_by for c in found] == ["lexical", "vector"]
+    assert found[0].term == "القضايا المدورة"
 
 
 def test_concepts_promote_their_tables_without_growing_the_prompt(stub_two_collections):

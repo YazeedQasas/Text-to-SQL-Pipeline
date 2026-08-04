@@ -28,13 +28,22 @@ CONCEPT_TOP_K = int(os.getenv("CONCEPT_TOP_K", "3"))
 # most turns, because most questions contain no special term. The threshold is
 # what makes abstaining the default.
 #
-# CALIBRATED, NARROWLY. Against the 19 concepts and a 13-question probe set,
-# true matches bottomed out at 0.5605 (محاكم الصلح) and the worst false positive
-# reached 0.5149 ("ما هي عناوين القضايا المدنية؟" pulling القضايا البسيطة). That
-# is a gap of only 0.046, so 0.55 sits in a thin margin — re-measure whenever
-# concepts are added, and do not raise this without checking محاكم الصلح still
-# clears it.
-CONCEPT_SCORE_THRESHOLD = float(os.getenv("CONCEPT_SCORE_THRESHOLD", "0.55"))
+# Applied to the best-scoring FRAGMENT of the question, not the whole question
+# (see services/arabic.py). Scoring whole questions put the same concept at
+# 0.6157 on a short question and 0.5046 on a long one, which left no usable
+# threshold; per-fragment scoring removes that dilution.
+#
+# CALIBRATED. Over a 15-question probe the vector signal caught 6 of 8 true
+# matches at 0.60 with zero false positives (highest false: 0.5678, from
+# "للطرف المدعي" in a question about email addresses). The two it misses are
+# caught by the lexical signal, which needs no threshold. Re-measure both
+# whenever concepts are added.
+CONCEPT_SCORE_THRESHOLD = float(os.getenv("CONCEPT_SCORE_THRESHOLD", "0.60"))
+# How long the in-memory copy of the glossary lives. Lexical matching tests
+# every concept's surface forms against the question, so the whole (small)
+# collection is held in memory rather than searched. The TTL is what makes a
+# re-run of ingest_concepts.py take effect without restarting the backend.
+CONCEPT_CACHE_TTL_SECONDS = float(os.getenv("CONCEPT_CACHE_TTL_SECONDS", "300"))
 # How many of the RETRIEVAL_TOP_K schema slots matched concepts may claim.
 # A concept's SQL fragment references its tables by name, so those tables must
 # reach the prompt or the fragment is unusable — but three concepts naming three

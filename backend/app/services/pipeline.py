@@ -12,9 +12,9 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from app.models import ContextUsage, HistoryTurn, QueryResponse, RetrievedTable
-from app.services import context, llm
+from app.services import arabic, context, llm
 from app.services.db import execute_select
-from app.services.embeddings import embed_text
+from app.services.embeddings import embed_texts
 from app.services.retrieval import (
     format_concepts_for_prompt,
     format_tables_for_prompt,
@@ -97,22 +97,38 @@ async def run_pipeline(
     history = context.trim_history(list(history or []))
 
     yield StageEvent("embedding", "started")
-    query_vector = await embed_text(question)
-    yield StageEvent("embedding", "completed", f"{len(query_vector)}-dimension vector")
+    # The question and its fragments go in ONE request. LM Studio's cost here is
+    # almost entirely per-call, not per-item — measured, a dozen fragments add
+    # ~260ms to a ~2.7s call, while issuing them as a second call would add the
+    # full 2.7s again.
+    grams = arabic.content_grams(question)
+    vectors = await embed_texts([question, *grams])
+    query_vector = vectors[0]
+    gram_vectors = list(zip(grams, vectors[1:]))
+    yield StageEvent(
+        "embedding",
+        "completed",
+        f"{len(query_vector)}-dimension vector, {len(grams)} question fragments",
+    )
 
     # Runs before retrieval rather than alongside it: a matched concept steers
     # which tables are chosen, so the schema search needs the result. The cost
     # is one Qdrant search over a glossary of a few dozen points, which is
     # nothing next to the two LLM calls further down.
     yield StageEvent("concepts", "started")
-    concepts = await search_concepts(query_vector)
+    concepts = await search_concepts(question, gram_vectors)
     glossary = format_concepts_for_prompt(concepts)
     yield StageEvent(
         "concepts",
         "completed",
         # Most questions contain no domain term at all, and the empty case is
         # the expected one — say so plainly rather than showing a bare "0".
-        ", ".join(f"{c.term} ({c.score:.2f})" for c in concepts)
+        # A lexical hit has no similarity score worth showing, so it is labelled
+        # by how it was found instead of by a number that means nothing.
+        ", ".join(
+            f"{c.term} ({'exact' if c.matched_by == 'lexical' else f'{c.score:.2f}'})"
+            for c in concepts
+        )
         if concepts
         else "no domain terms matched",
         content=glossary or None,

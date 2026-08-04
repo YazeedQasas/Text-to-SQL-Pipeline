@@ -49,12 +49,15 @@ def stub_pipeline(monkeypatch):
         "concepts": [],
         "boosted_with": None,
         "sql_glossary": None,
+        "grams": None,
     }
 
-    async def fake_embed_text(_text):
-        return [0.1] * 8
+    async def fake_embed_texts(texts):
+        # One vector per input: the question first, then its fragments.
+        return [[0.1] * 8 for _ in texts]
 
-    async def fake_search_concepts(_vector):
+    async def fake_search_concepts(_question, gram_vectors):
+        state["grams"] = [gram for gram, _ in gram_vectors]
         return state["concepts"]
 
     async def fake_search_with_carryover(_vector, carry_table_names, concepts=()):
@@ -74,7 +77,7 @@ def stub_pipeline(monkeypatch):
         state["answer_history"] = list(history)
         return _chunks("One ", "case ", "found.")
 
-    monkeypatch.setattr(pipeline, "embed_text", fake_embed_text)
+    monkeypatch.setattr(pipeline, "embed_texts", fake_embed_texts)
     monkeypatch.setattr(pipeline, "search_concepts", fake_search_concepts)
     monkeypatch.setattr(pipeline, "search_with_carryover", fake_search_with_carryover)
     monkeypatch.setattr(pipeline, "execute_select", fake_execute_select)
