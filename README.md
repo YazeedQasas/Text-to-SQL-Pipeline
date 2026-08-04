@@ -235,6 +235,30 @@ Notes:
   context, one to turn the executed query's results into a natural-language
   answer — matching the spec's "results returned to the LLM for a final
   natural-language response."
+- **Conversation memory lives in the browser**: the backend keeps no session
+  state — the chat page replays the transcript with every question, exactly as
+  the catalog flow keeps its run state client-side. What is replayed is the
+  question, the SQL and the answer *text* of each past turn, never the result
+  rows: one 200-row result outweighs the schema, the system prompt and the rest
+  of the conversation combined. Past turns enter the SQL prompt as real
+  `user`/`assistant` message pairs, so a follow-up like "بس المفتوحة منها" is
+  the model editing its own last query rather than writing a new one blind.
+- **Retrieval carries the previous turn's tables forward**: a follow-up names
+  no table of its own, so embedding it alone retrieves past the subject the
+  conversation is actually about — and takes the prior SQL in the prompt out of
+  context with it. The tables the last question resolved to are appended to
+  this question's top-k, deduplicated and capped by `CONTEXT_CARRY_TABLES`.
+  This is cheaper and more honest than an LLM call that rewrites the question,
+  which can silently rewrite it wrong.
+- **The context window is enforced here, not by LM Studio**: every request is
+  costed against `CONTEXT_WINDOW_TOKENS` before any LLM call, and a full
+  conversation is refused with HTTP 413 so the user starts a new chat. Turns
+  are never silently dropped. Both halves of that matter — overflow inside LM
+  Studio truncates the *start* of the prompt, which is the schema, so the model
+  would answer with invented columns rather than admit it lost the thread; and
+  an assistant that quietly forgets which case you were discussing is worse
+  than one that stops. Counts are deliberately over-estimates (see
+  `services/context.py`), because being wrong low is the dangerous direction.
 - **Off-topic questions are refused at SQL generation, not before it**: vector
   search always returns its top-k tables, so retrieval cannot tell "off-domain"
   from "hard" on its own. The obvious fix — an LLM relevance gate in front of
@@ -269,5 +293,5 @@ Notes:
   `COUNT(DISTINCT ...)` cost and a PII skip-list come in.
 - Hybrid dense+sparse Qdrant search
 - Query result caching, auth, multi-turn conversation
-- Cancelling an in-flight run from the UI (the SSE reader is cancelled on
-  unmount, but the server-side pipeline runs to completion)
+- Persisting conversations across a page reload (the transcript lives in
+  component state, so a refresh starts a new chat)

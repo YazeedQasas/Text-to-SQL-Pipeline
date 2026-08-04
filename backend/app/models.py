@@ -3,8 +3,29 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class HistoryTurn(BaseModel):
+    """One past exchange, replayed by the browser so the model has context.
+
+    Result rows are deliberately absent: a single 200-row result outweighs the
+    schema, the system prompt and the whole rest of the transcript combined.
+    The answer text already says what the rows showed.
+    """
+
+    question: str = Field(..., max_length=2000)
+    sql: str = Field("", max_length=4000)
+    answer: str = Field("", max_length=4000)
+    # Tables this turn resolved to, carried forward so a follow-up that
+    # retrieves nothing on its own still sees the schema it depends on.
+    table_names: list[str] = Field(default_factory=list, max_length=20)
+
+
 class QueryRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000, description="Natural-language question from the user.")
+    # The backend holds no session state; the transcript lives in the browser
+    # and is replayed here. This cap only bounds the request body — the token
+    # budget in services/context.py is what actually decides how much history
+    # the model is given, and it binds first.
+    history: list[HistoryTurn] = Field(default_factory=list, max_length=1000)
 
 
 class RetrievedTable(BaseModel):
@@ -13,12 +34,21 @@ class RetrievedTable(BaseModel):
     score: float
 
 
+class ContextUsage(BaseModel):
+    """How much of the model's window this exchange occupied."""
+
+    used_tokens: int
+    limit_tokens: int
+    history_turns: int
+
+
 class QueryResponse(BaseModel):
     answer: str
     sql: str
     columns: list[str]
     rows: list[dict]
     retrieved_tables: list[RetrievedTable]
+    usage: ContextUsage
 
 
 # --- Schema catalog review ----------------------------------------------------

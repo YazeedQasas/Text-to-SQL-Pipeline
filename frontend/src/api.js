@@ -42,17 +42,28 @@ export function approveCatalog(items) {
  * EventSource can't issue a POST, so this reads the server-sent event stream
  * off the fetch response body directly.
  *
+ * The backend holds no session state, so `history` — the transcript so far — is
+ * replayed with every question. Errors carry the server's status code so the
+ * caller can tell a full context window (413) from an ordinary failure.
+ *
+ * Aborting `signal` drops the connection, which closes the server's event
+ * generator and cancels the LM Studio request behind it — so stopping actually
+ * frees the model rather than just hiding its output. The abort surfaces as an
+ * `AbortError`, which callers should treat as a cancellation, not a failure.
+ *
  * @param {string} question
- * @param {{ onStages?: (stages) => void, onStage?: (event) => void, onToken?: (event) => void }} handlers
+ * @param {Array<{question: string, sql: string, answer: string, table_names: string[]}>} history
+ * @param {{ onStages?, onStage?, onToken?, onUsage?, signal?: AbortSignal }} handlers
  * @returns {Promise<object>} the final QueryResponse
  */
-export async function submitQueryStream(question, handlers = {}) {
-  const { onStages, onStage, onToken } = handlers;
+export async function submitQueryStream(question, history = [], handlers = {}) {
+  const { onStages, onStage, onToken, onUsage, signal } = handlers;
 
   const response = await fetch(`${API_BASE_URL}/api/query/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({ question, history }),
+    signal,
   });
 
   if (!response.ok || !response.body) {
@@ -76,11 +87,17 @@ export async function submitQueryStream(question, handlers = {}) {
       case "token":
         onToken?.(event);
         break;
+      case "usage":
+        onUsage?.(event.usage);
+        break;
       case "result":
         result = event.result;
         break;
-      case "error":
-        throw new Error(event.detail);
+      case "error": {
+        const error = new Error(event.detail);
+        error.status = event.status_code;
+        throw error;
+      }
       default:
         break;
     }
@@ -111,6 +128,9 @@ export async function submitQueryStream(question, handlers = {}) {
   }
 
   if (!result) {
+    // An abort lands here only if it raced the last read; report it as the
+    // cancellation it is rather than as a dropped connection.
+    if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
     throw new Error("The connection closed before a result arrived.");
   }
   return result;

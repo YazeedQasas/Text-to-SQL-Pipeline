@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 import httpx
 
 from app.config import LLM_MODEL, LM_STUDIO_BASE_URL
+from app.services import context
 
 # These stay written in English even though the system is Arabic-facing: they are
 # instructions *about* SQL, and instruction-following on code generation is
@@ -90,7 +91,7 @@ stored records.
 """
 
 
-async def _chat_stream(system_prompt: str, user_prompt: str) -> AsyncIterator[str]:
+async def _chat_stream(messages: list[dict]) -> AsyncIterator[str]:
     """Yield content deltas from an OpenAI-compatible streaming chat completion."""
     async with httpx.AsyncClient(base_url=LM_STUDIO_BASE_URL, timeout=120.0) as client:
         async with client.stream(
@@ -98,10 +99,7 @@ async def _chat_stream(system_prompt: str, user_prompt: str) -> AsyncIterator[st
             "/chat/completions",
             json={
                 "model": LLM_MODEL,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
+                "messages": messages,
                 "stream": True,
                 "temperature": 0.1,
             },
@@ -157,23 +155,104 @@ def parse_no_query(sql: str) -> str | None:
     return match.group(1).strip().strip('"') or NO_QUERY_FALLBACK
 
 
-def stream_sql(question: str, schema_context: str) -> AsyncIterator[str]:
-    user_prompt = f"Schema:\n{schema_context}\n\nQuestion: {question}\n\nSQL query:"
-    return _chat_stream(_SQL_SYSTEM_PROMPT, user_prompt)
+def build_sql_messages(
+    question: str, schema_context: str, history: list = (), glossary: str = ""
+) -> list[dict]:
+    """Prompt for SQL generation, with past turns replayed as question → SQL.
+
+    Past turns carry the SQL rather than the answer: the useful context for
+    writing a query is the query that was written last time, which the model can
+    edit ("only the open ones") instead of composing from scratch. The schema
+    rides on the final message only — it is rebuilt from retrieval every turn,
+    so repeating it per historical turn would pay for it many times over.
+
+    `glossary` is the rendered domain-term block (retrieval.py), empty on the
+    usual turn. It sits AFTER the schema and immediately before the question for
+    two reasons: it is meaningless without the columns it references, and LM
+    Studio truncates an overlong prompt from the START — so the further from the
+    head this sits, the later it is lost. Its instructions live inside the block
+    rather than in _SQL_SYSTEM_PROMPT so that a turn matching no concepts pays
+    nothing for the feature.
+    """
+    messages = [{"role": "system", "content": _SQL_SYSTEM_PROMPT}]
+
+    for turn in history:
+        if not turn.sql:
+            continue  # a turn that never produced SQL teaches nothing here
+        messages.append({"role": "user", "content": turn.question})
+        messages.append({"role": "assistant", "content": turn.sql})
+
+    glossary_section = f"{glossary}\n\n" if glossary else ""
+    messages.append(
+        {
+            "role": "user",
+            "content": (
+                f"Schema:\n{schema_context}\n\n"
+                f"{glossary_section}"
+                f"Question: {question}\n\nSQL query:"
+            ),
+        }
+    )
+    return messages
+
+
+_MAX_PREVIEW_ROWS = 50
+
+
+def build_answer_messages(
+    question: str, sql: str, columns: list[str], rows: list[dict], history: list = ()
+) -> list[dict]:
+    """Prompt for the natural-language answer, with past question/answer pairs.
+
+    Only the prose of past turns is replayed, never their result rows — one
+    200-row result costs more than the entire rest of the conversation.
+
+    This turn's rows are fitted to whatever budget is left rather than to a
+    fixed count, because rows are the one input whose size the user controls:
+    a wide SELECT over 50 rows can outweigh the schema and the whole transcript
+    on its own. Overflowing here would truncate the head of the prompt — the
+    instruction to answer in Arabic and the question itself — and the model
+    would answer something else entirely.
+    """
+    messages = [{"role": "system", "content": _ANSWER_SYSTEM_PROMPT}]
+
+    for turn in history:
+        if not turn.answer:
+            continue
+        messages.append({"role": "user", "content": turn.question})
+        messages.append({"role": "assistant", "content": turn.answer})
+
+    def render(preview: list[dict]) -> str:
+        shown = f", showing {len(preview)}" if len(preview) < len(rows) else ""
+        return (
+            f"Question: {question}\n\n"
+            f"SQL executed: {sql}\n\n"
+            f"Columns: {columns}\n\n"
+            f"Rows ({len(rows)} total{shown}): {preview}\n\n"
+            "Answer:"
+        )
+
+    # Halve the preview until it fits. Starting from the cap and stepping down
+    # keeps the common case (small results) at a single measurement.
+    preview_rows = rows[:_MAX_PREVIEW_ROWS]
+    headroom = context.limit_tokens() - context.estimate_messages(messages)
+    while preview_rows and context.estimate_tokens(render(preview_rows)) > headroom:
+        preview_rows = preview_rows[: len(preview_rows) // 2]
+
+    messages.append({"role": "user", "content": render(preview_rows)})
+    return messages
+
+
+def stream_sql(
+    question: str, schema_context: str, history: list = (), glossary: str = ""
+) -> AsyncIterator[str]:
+    return _chat_stream(build_sql_messages(question, schema_context, history, glossary))
 
 
 def stream_answer(
-    question: str, sql: str, columns: list[str], rows: list[dict]
+    question: str, sql: str, columns: list[str], rows: list[dict], history: list = ()
 ) -> AsyncIterator[str]:
-    preview_rows = rows[:50]  # keep the prompt bounded even if MAX_RESULT_ROWS is large
-    user_prompt = (
-        f"Question: {question}\n\n"
-        f"SQL executed: {sql}\n\n"
-        f"Columns: {columns}\n\n"
-        f"Rows ({len(rows)} total, showing up to 50): {preview_rows}\n\n"
-        "Answer:"
-    )
-    return _chat_stream(_ANSWER_SYSTEM_PROMPT, user_prompt)
+    return _chat_stream(build_answer_messages(question, sql, columns, rows, history))
 
 
 async def collect(stream: AsyncIterator[str]) -> str:
@@ -225,7 +304,14 @@ async def chat_json(system_prompt: str, user_prompt: str) -> dict:
     the response is not usable JSON; callers decide the retry and fallback
     policy.
     """
-    raw = await collect(_chat_stream(system_prompt, user_prompt))
+    raw = await collect(
+        _chat_stream(
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+        )
+    )
     parsed = json.loads(_extract_json_object(raw))
     if not isinstance(parsed, dict):
         raise ValueError("Model response was valid JSON but not an object.")
