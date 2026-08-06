@@ -41,7 +41,7 @@ _client = AsyncQdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
 class Concept:
     """A domain term the schema does not contain, and its SQL mapping.
 
-    See ingestion/concepts.py. `sql` is a fragment — a predicate, an expression,
+    See data/CONCEPTS.md. `sql` is a fragment — a predicate, an expression,
     or a join path — never a complete query.
 
     `matched_by` records which signal found it: "lexical" when the term is
@@ -150,7 +150,7 @@ def _to_concept(payload: dict, score: float, matched_by: str) -> Concept:
 # The whole glossary, held in memory for lexical matching — which has to test
 # every concept's surface forms against the question and so cannot be expressed
 # as a vector search. Tens of concepts, refreshed on a timer so re-running
-# ingest_concepts.py takes effect without a backend restart.
+# a concept sync takes effect without a backend restart.
 _concept_cache: list[dict] | None = None
 _concept_cache_loaded_at = 0.0
 
@@ -215,7 +215,7 @@ async def search_concepts(
     boost slots first.
 
     A missing collection is not an error: the glossary is optional, and a
-    deployment that has not run ingest_concepts.py answers exactly as it did
+    deployment whose concepts have never been synced answers exactly as it did
     before rather than failing every question.
     """
     payloads = await load_all_concepts()

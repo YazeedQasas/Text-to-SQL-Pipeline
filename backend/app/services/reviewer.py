@@ -62,11 +62,14 @@ Decide whether a human needs to review this table before it is indexed. Flag it 
 'tmp2', 'x1'). An ordinary English identifier such as case_number or full_name is not a problem.
 - the sample rows have nothing to do with the subject matter of the existing tables
 - the existing description does not actually match the sample rows
-- the description is missing, is not in Arabic, or is too vague to tell someone what the \
+- an existing description is not in Arabic, or is too vague to tell someone what the \
 table holds
 
 Do not flag a table merely for being new, small, or empty, as long as it is intelligible \
-and clearly belongs with the others.
+and clearly belongs with the others. A table that has NO description yet is the normal case \
+for a new table: you are being asked to write one, so its absence is never by itself a reason \
+to flag. Judge such a table only on whether it is intelligible and in-domain, and on whether \
+you were able to write a real description for it.
 
 Respond with ONLY a JSON object, no prose and no code fences:
 {
@@ -169,9 +172,17 @@ def build_user_prompt(packet: ReviewPacket) -> str:
             f"Current description: {packet.current_description}"
         )
     else:
+        # Spelled out because the model otherwise flags the table for the very
+        # gap it is being asked to fill. Measured on the `principles` table: it
+        # wrote a good Arabic description and all six column descriptions, then
+        # set needs_edit with the reason "الوصف مفقود تماماً" — which is about
+        # the input, not its own output. Left as it was, every newly created
+        # table would be held back and the unattended path would never fire.
         question = (
-            "This table has no description yet. Decide whether it is intelligible and belongs "
-            "in this catalog, and write a description for it."
+            "This table has no description yet — that is expected, and is NOT a reason to "
+            "flag it. Your job is to write one. Decide whether the table is intelligible and "
+            "belongs in this catalog; set \"needs_edit\": true only if it is unintelligible, "
+            "off-domain, or you could not write a real description from what you were shown."
         )
 
     return f"""Tables already in the catalog (this is what the database is about):

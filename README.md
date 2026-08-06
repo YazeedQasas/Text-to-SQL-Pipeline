@@ -19,14 +19,38 @@ Each of those steps is reported to the browser as it happens, and both LLM
 calls stream their tokens, so the UI shows which stage the run has reached and
 renders the SQL and the final answer as they are written.
 
+That is the read path. The other half keeps what it reads from going stale, so
+that a table or a term added today is queryable today without anyone hand-editing
+a Python file:
+
+```
+MySQL DDL ──► Debezium ──► /api/cdc/events ──► debounce (wait for rows)
+                                                   │
+                                          introspect + sample + LLM review
+                                                   │
+                                    ┌──────────────┴──────────────┐
+                              clean verdict                 flagged
+                                    │                           │
+                            upsert to Qdrant            quarantine + warn
+                              (queryable)              (Schema updates tab)
+
+data/concepts.json ◄──────── three-way sync ────────► Qdrant legal_concepts
+                        (snapshot + delete rail; Qdrant-side
+                         deletions noticed via container logs)
+```
+
+Everything on this half reports to the **Activity** tab, since by definition
+nobody is watching when it runs.
+
 ## Project layout
 
 ```
-db/           MySQL schema + seed data + read-only user grant
+db/           MySQL schema + seed data + read-only user grant + CDC user grant
+data/         concepts.json (the legal glossary) + runtime state (gitignored)
 ingestion/    Schema doc builder + BGE-M3 embedding → Qdrant ingestion script
 backend/      FastAPI service (retrieval, SQL generation, execution, response)
 frontend/     Minimal React test harness (input box → answer)
-docker-compose.yml   Qdrant for local dev
+docker-compose.yml   Qdrant for local dev, plus Debezium under the `cdc` profile
 .env.example          Shared config template
 ```
 
@@ -106,8 +130,24 @@ IDs per table).
 cd backend
 python -m venv .venv && .venv/Scripts/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000 --http h11 --ws none
 ```
+
+Those last three flags matter if you are running the CDC path (section 8). Each
+one fixes a specific failure that otherwise looks like Debezium being broken:
+
+- **`--http h11`** — the default `httptools` parser stops reading the request
+  body the moment it sees an `Upgrade:` header, and hands the app an empty one.
+  Debezium's sink is a Java HTTP client, which always offers to upgrade to
+  HTTP/2 (`Upgrade: h2c`). Every event therefore arrived with no body, was
+  discarded as unparseable, and Debezium logged `Failed to publish event:
+  Invalid HTTP request received` — the text of uvicorn's own 400 page, echoed
+  back. `h11` parses the body regardless. Measured: 0 events accepted before,
+  29 after, with nothing else changed.
+- **`--host 0.0.0.0`** — the default binds `127.0.0.1` only, which a container
+  cannot reach through `host.docker.internal`.
+- **`--ws none`** — silences the "Unsupported upgrade request" warning that the
+  same `Upgrade` header produces. Cosmetic; there are no WebSocket routes.
 
 Endpoints:
 
@@ -191,10 +231,146 @@ Notes:
 - Skipping a table is a per-scan decision and is not remembered; an
   unresolved table will reappear on the next scan.
 
+## 8. Documenting new tables automatically (Debezium)
+
+Step 7 is the manual version: someone remembers to press a button. This is the
+same thing without the someone — a table created in the SQL editor documents
+itself and becomes queryable in the chatbot.
+
+Debezium Server tails the MySQL binary log and POSTs each change event to
+`/api/cdc/events`. The backend does *not* document straight from the event:
+Debezium says a table was created, but the reviewer's strongest evidence is a
+sample of real rows, and a `CREATE TABLE` arrives when the table is still empty.
+So the event only marks the table as worth looking at, and the actual work runs
+the exact same `introspect → diff → review` path the Scan button uses.
+
+**Prerequisites.** Debezium needs more than the read-only query user has:
+
+```sql
+SELECT @@log_bin, @@binlog_format, @@binlog_row_image, @@server_id;
+-- expected: 1, ROW, FULL, and any non-zero server id
+```
+
+If `log_bin` is 0, the binary log is off. That is set in `my.cnf`/`my.ini` and
+needs a **server restart** — see the block at the bottom of `db/06_cdc_user.sql`.
+Then create the replication user:
+
+```bash
+mysql -u root -p < db/06_cdc_user.sql   # edit the password in it first
+```
+
+**Start it.**
+
+```bash
+docker compose --profile cdc up -d
+docker logs -f texttosql-debezium        # should reach "Connected to binlog at ..."
+```
+
+Make sure the backend was started with the flags from section 5 — in particular
+`--http h11`. Without it Debezium connects, streams, and reports every event as
+published, while the backend receives every one of them with an empty body and
+silently discards it. Both sides look healthy and nothing works.
+
+The profile is opt-in precisely because of those prerequisites: without them the
+container crash-loops, so it stays out of the default `docker compose up`.
+
+**What happens to a new table.**
+
+1. `CREATE TABLE case_notes (...)` commits.
+2. The event reaches the backend, which starts a debounce window
+   (`CDC_DEBOUNCE_SECONDS`, default 20s). Any `INSERT`s that follow extend it,
+   capped at `CDC_MAX_WAIT_SECONDS` — so a bulk load produces **one** review
+   after it finishes, with rows to look at, rather than one per batch.
+3. The window closes. The table is introspected, sampled, and reviewed.
+4. **Clean verdict** → embedded and upserted into `schema_docs` unattended. It
+   is queryable immediately.
+   **Flagged verdict** → held in `data/quarantine.json`, *not* indexed, and
+   raised as a warning in the Activity tab. It shows up in the Schema updates
+   tab under the same review card, with a badge on the nav item.
+
+That split is the one place the automation deliberately stops. A description the
+model itself could not vouch for is not something to index silently, and the
+rule from step 7 still holds: once a human writes the text, that text is what
+gets indexed.
+
+A table dropped in MySQL has its schema document deleted with no review — it
+describes something that no longer exists, and leaving it indexed makes the
+model write SQL against a missing table.
+
+## 9. The legal glossary (Concepts tab)
+
+`data/concepts.json` maps terms a judge would use onto the SQL that expresses
+them — nothing in the database stores the string "محكمة الصلح", and no column
+marks a case "متقادمة". Authoring rules are in `data/CONCEPTS.md`.
+
+Edit the file directly, or upload a replacement in the **Concepts** tab. Either
+way it reconciles against the `legal_concepts` Qdrant collection **both
+directions**: delete a concept from the file and its point is removed; delete a
+point in the Qdrant dashboard and it is removed from the file.
+
+```bash
+python ingestion/ingest_concepts.py --dry-run   # show the plan, touch nothing
+python ingestion/ingest_concepts.py             # apply it
+```
+
+**How it knows which way.** Comparing two sides tells you they differ; it cannot
+tell you which one moved. "Removed from the file" and "added to Qdrant" produce
+an identical two-way diff. So the sync is three-way —
+`data/.concepts-sync-state.json` records the state both sides last agreed on,
+and each concept is judged against that rather than against the other side:
+
+| file | snapshot | Qdrant | → |
+|---|---|---|---|
+| yes | no | no | added to the file → upsert into Qdrant |
+| no | no | yes | added to Qdrant → add to the file |
+| yes | yes | no | deleted from Qdrant → remove from the file |
+| no | yes | yes | deleted from the file → delete from Qdrant |
+| edited | yes | same | edited in the file → upsert |
+| same | yes | edited | edited in Qdrant → write back to the file |
+| edited | yes | edited | edited in both → the file wins, warn |
+
+Do not edit or delete the snapshot. Deleting it is not destructive — with no
+record of an agreement everything looks newly added, so the next sync *merges*
+rather than deletes — but you lose the ability to distinguish a deletion until
+the next successful sync.
+
+**The delete rail.** A sync that would remove more than
+`CONCEPT_SYNC_DELETE_RATIO` (default 30%) of either side refuses and raises a
+warning instead. This is not theoretical: if Qdrant ever restarts on an empty
+volume, every concept looks deleted and an unguarded reconcile would empty
+`concepts.json` to match. Force it with `--force` (or the button in the tab)
+once you have looked at what it wanted to do.
+
+**Noticing outside deletions.** Qdrant has no change feed, so the backend tails
+its container log. Worth knowing what that log actually contains — measured on
+qdrant:v1.9.4:
+
+```
+INFO ...collection_meta_ops: Deleting collection legal_concepts
+INFO actix_web...logger: "POST /collections/legal_concepts/points/delete" 200
+```
+
+A collection drop is named. A point delete is an access-log line with **no
+request body**, so the deleted ids are not recoverable from it. That is why the
+watcher only ever triggers a full reconcile and never reads identity out of the
+log. Blind spot: only REST (6333) is logged, so a delete issued over gRPC (6334)
+produces no line at all — `qdrant-client` defaults to REST, so the app's own
+writes are covered.
+
+## 10. The Activity tab
+
+Everything above happens when nobody is watching, which is the problem this tab
+solves. It streams (SSE) every automated action: tables documented, concepts
+synced, syncs refused, reviews that came back flagged. Warnings and errors stay
+visible and filterable; the backing store is an append-only JSONL at
+`data/activity.jsonl`, so a backend restart does not lose the history — which
+matters, because restarting the backend is the first thing anyone does when
+something has gone wrong.
+
 ## Design notes
 
-- **Language (Arabic)**: the system is Arabic-facing. Descriptions in
-  `ingestion/schema_docs.py` are Arabic, and the answer and catalog-review
+- **Language (Arabic)**: the system is Arabic-facing. Schema descriptions and
+  `data/concepts.json` are Arabic, and the answer and catalog-review
   prompts produce Arabic. Identifiers — table names, column names, foreign
   keys — stay English on purpose: the user never sees them, the LLM writes
   measurably better SQL against them, and it avoids backtick-quoting every

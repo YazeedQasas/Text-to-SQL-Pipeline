@@ -7,7 +7,7 @@ load_dotenv()
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY") or None
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "schema_docs")
-# Domain glossary (concepts.py). Deliberately a SEPARATE collection rather than
+# Domain glossary (data/concepts.json). Deliberately a SEPARATE collection than
 # a `level`-filtered slice of schema_docs: the glossary is hand-written and
 # re-ingested on its own cadence, while schema_docs is also written by the
 # backend's catalog-review path. Keeping them apart means editing a definition

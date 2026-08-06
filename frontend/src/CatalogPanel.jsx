@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { approveCatalog, scanCatalog } from "./api";
+import { useEffect, useState } from "react";
+import { approveCatalog, dismissReview, fetchReviewQueue, scanCatalog } from "./api";
 
 const SEVERITY_LABELS = {
   ok: "Looks fine",
@@ -24,13 +24,37 @@ function missingDescription(item) {
   return item.action === "upsert" && !item.doc.description.trim();
 }
 
-export default function CatalogPanel() {
+export default function CatalogPanel({ onReviewCountChange }) {
   const [items, setItems] = useState(null); // null = never scanned
   const [scanning, setScanning] = useState(false);
   const [approving, setApproving] = useState(false);
   const [error, setError] = useState(null);
   const [summary, setSummary] = useState(null);
   const [approved, setApproved] = useState(null);
+  // Everything the automated path documented — both the tables it flagged and
+  // the ones it indexed on its own. Same shape as a scan result, so they render
+  // through the same card.
+  const [pending, setPending] = useState([]);
+  const [savingPending, setSavingPending] = useState(false);
+
+  async function loadPending() {
+    try {
+      const data = await fetchReviewQueue();
+      const entries = data.entries.map((entry) => ({ ...entry, action: defaultAction(entry) }));
+      setPending(entries);
+      // Only the not-yet-indexed ones get badged: an already-indexed table
+      // works, so nagging about it would train people to ignore the badge.
+      onReviewCountChange?.(entries.filter((entry) => !entry.indexed).length);
+    } catch {
+      // The review queue is supplementary; failing to load it must not stop
+      // the manual scan flow, which is the reason this panel exists.
+    }
+  }
+
+  useEffect(() => {
+    loadPending();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function updateItem(tableName, patch) {
     setItems((prev) =>
@@ -40,6 +64,44 @@ export default function CatalogPanel() {
           : item,
       ),
     );
+  }
+
+  function updatePending(tableName, patch) {
+    setPending((prev) =>
+      prev.map((item) =>
+        item.table_name === tableName
+          ? { ...item, ...(typeof patch === "function" ? patch(item) : patch) }
+          : item,
+      ),
+    );
+  }
+
+  async function handleApprovePending() {
+    const actionable = pending.filter((item) => item.action !== "skip");
+    if (actionable.length === 0) return;
+
+    setSavingPending(true);
+    setError(null);
+    try {
+      // The same endpoint the manual flow uses, which also clears these from
+      // the review queue — once a person has saved it, it has been seen.
+      await approveCatalog(actionable.map((item) => ({ doc: item.doc, action: item.action })));
+      await loadPending();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingPending(false);
+    }
+  }
+
+  async function handleDismiss(tableName) {
+    setError(null);
+    try {
+      await dismissReview(tableName);
+      await loadPending();
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   async function handleScan() {
@@ -92,6 +154,50 @@ export default function CatalogPanel() {
         Check whether MySQL has changed since the schema index was last built, and review anything
         new before it gets added.
       </p>
+
+      {pending.length > 0 && (
+        <section className="review-queue">
+          <h2 className="review-queue-title">
+            {pending.length} table{pending.length === 1 ? "" : "s"} documented automatically
+          </h2>
+          <p className="catalog-hint">
+            Picked up from a schema change and described by the model. Read the table description
+            and the column descriptions below — they are what questions get matched against, so
+            vague text here means the chatbot answers badly. Edit anything and re-index it.
+          </p>
+
+          {pending.map((item) => (
+            <ChangeCard
+              key={item.table_name}
+              item={item}
+              onChange={(patch) => updatePending(item.table_name, patch)}
+              onDismiss={() => handleDismiss(item.table_name)}
+              detectedAt={item.detected_at}
+              indexed={item.indexed}
+            />
+          ))}
+
+          <div className="catalog-footer">
+            <button
+              type="button"
+              className="approve"
+              onClick={handleApprovePending}
+              disabled={
+                savingPending ||
+                pending.filter((item) => item.action !== "skip").length === 0 ||
+                pending.some(missingDescription)
+              }
+            >
+              {savingPending ? "Saving…" : "Save & re-index"}
+            </button>
+            {pending.some(missingDescription) && (
+              <span className="catalog-hint">
+                {pending.filter(missingDescription).length} still need a description.
+              </span>
+            )}
+          </div>
+        </section>
+      )}
 
       <div className="catalog-actions">
         <button type="button" onClick={handleScan} disabled={scanning || approving}>
@@ -153,10 +259,14 @@ export default function CatalogPanel() {
   );
 }
 
-function ChangeCard({ item, onChange }) {
+function ChangeCard({ item, onChange, onDismiss, detectedAt, indexed }) {
   const { verdict, doc } = item;
   // The scan's verdict is shown for information only — it never blocks a sync.
   const flagged = verdict.needs_edit;
+  // Review-queue entries arrive with descriptions already written, and reading
+  // them is the whole point of the card, so the columns start open. A scan
+  // result's columns are usually empty and would just be noise expanded.
+  const isReviewEntry = indexed !== undefined;
 
   function setDescription(description) {
     onChange({ doc: { ...doc, description } });
@@ -180,12 +290,27 @@ function ChangeCard({ item, onChange }) {
           <strong>{item.table_name}</strong>
           <span className="change-type">{CHANGE_LABELS[item.change_type] ?? item.change_type}</span>
         </div>
-        <span className={`badge badge-${flagged ? "warn" : "ok"}`}>
-          {SEVERITY_LABELS[verdict.severity] ?? verdict.severity}
-        </span>
+        <div className="change-badges">
+          {isReviewEntry && (
+            <span className={`badge badge-${indexed ? "live" : "warn"}`}>
+              {indexed ? "Queryable now" : "Not indexed yet"}
+            </span>
+          )}
+          <span className={`badge badge-${flagged ? "warn" : "ok"}`}>
+            {SEVERITY_LABELS[verdict.severity] ?? verdict.severity}
+          </span>
+        </div>
       </div>
 
-      <p className="change-summary">{item.summary}</p>
+      <p className="change-summary">
+        {item.summary}
+        {detectedAt > 0 && (
+          <span className="change-detected">
+            {" "}
+            · picked up {new Date(detectedAt * 1000).toLocaleString()}
+          </span>
+        )}
+      </p>
 
       {flagged && verdict.reasons.length > 0 && (
         <ul className="change-reasons">
@@ -216,8 +341,13 @@ function ChangeCard({ item, onChange }) {
             </div>
           )}
 
-          <details className="change-columns">
-            <summary>Columns ({doc.columns.length})</summary>
+          <details className="change-columns" open={isReviewEntry}>
+            <summary>
+              Column descriptions ({doc.columns.length})
+              {isReviewEntry &&
+                doc.columns.some((column) => !column.description.trim()) &&
+                ` — ${doc.columns.filter((column) => !column.description.trim()).length} empty`}
+            </summary>
             {doc.columns.map((column) => (
               <label key={column.name} className="field field-inline">
                 <span>
@@ -251,7 +381,11 @@ function ChangeCard({ item, onChange }) {
             checked={item.action !== "skip"}
             onChange={() => onChange({ action: defaultAction(item) })}
           />
-          {item.change_type === "table_dropped" ? "Remove from index" : "Add to index"}
+          {item.change_type === "table_dropped"
+            ? "Remove from index"
+            : indexed
+              ? "Save my edits"
+              : "Add to index"}
         </label>
         <label>
           <input
@@ -261,6 +395,14 @@ function ChangeCard({ item, onChange }) {
           />
           Leave alone
         </label>
+        {onDismiss && (
+          // Review-queue entries only. "Leave alone" keeps it in the list for
+          // next time; this takes it off the list for good without changing
+          // what is indexed either way.
+          <button type="button" className="dismiss" onClick={onDismiss}>
+            {indexed ? "Looks good, hide it" : "Dismiss"}
+          </button>
+        )}
       </div>
     </div>
   );

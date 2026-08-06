@@ -1,4 +1,4 @@
-# Local dev infra: Qdrant (vector DB) only.
+# Local dev infra: Qdrant (vector DB), plus Debezium Server for change capture.
 #
 # The LLM and embedding model (BGE-M3) are served by LM
 # Studio, which runs as a desktop app on the host — not containerized here.
@@ -9,7 +9,13 @@
 # already have; point .env at it.
 #
 # Usage:
-#   docker compose up -d
+#   docker compose up -d                    # Qdrant only
+#   docker compose --profile cdc up -d      # + automatic table documentation
+#
+# The `cdc` profile is opt-in because Debezium has prerequisites the rest of the
+# stack does not: MySQL must have the binary log switched on, and a replication
+# user must exist. See db/06_cdc_user.sql and the README. Without them the
+# container crash-loops, so it stays out of the default `up`.
 
 services:
   qdrant:
@@ -21,5 +27,121 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
 
+  # Tails the MySQL binary log and POSTs each change event to the backend at
+  # /api/cdc/events, which is what makes a newly created table document itself.
+  #
+  # Debezium Server rather than Kafka + Kafka Connect: the standard deployment
+  # exists to fan one change stream out to many consumers durably, and there is
+  # exactly one consumer here. The HTTP sink removes three containers and the
+  # consumer code with them.
+  #
+  # 3.x, not 2.7.x, and the reason is specific: MySQL 8.4 renamed
+  # `SHOW MASTER STATUS` to `SHOW BINARY LOG STATUS` and 9.0 removed the old
+  # name outright. Debezium 2.7's MySQL connector still issues the old
+  # statement, so against a 9.x server it fails at snapshot with a SQL syntax
+  # error that points nowhere near the version. Verified on this project's
+  # MySQL 9.2.0: `SHOW MASTER STATUS` -> error 1064.
+  #
+  # ALL configuration is passed here as environment variables, and there is
+  # deliberately no application.properties. Two independent reasons:
+  #
+  #   1. A bind mount of a config directory silently yields an EMPTY directory
+  #      in the container when the host path is not in Docker Desktop's shared
+  #      list — the default for anything under Desktop\ on Windows. Debezium
+  #      then reports a missing property rather than a missing file.
+  #   2. Baking the file into the image instead does not help: the stock image
+  #      ships `application.properties.example` in /debezium/config/, but that
+  #      directory is not on the classpath the launcher builds
+  #      (`$RUNNER:config/lib:lib/*`), and a file placed in either location was
+  #      still not picked up here — Quarkus kept reporting
+  #      `debezium.sink.type` as absent from every config source.
+  #
+  # Environment variables have neither problem. The one setting they cannot
+  # express is handled by JAVA_OPTS below.
+  debezium:
+    image: debezium/server:3.0.0.Final
+    container_name: texttosql-debezium
+    profiles: ["cdc"]
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+    volumes:
+      # Offsets and schema history, so a restart resumes rather than re-reading
+      # the log from the beginning. Config does NOT live here — see above.
+      - debezium_data:/debezium/data
+    environment:
+      # SmallRye maps DEBEZIUM_SINK_TYPE onto debezium.sink.type: upper-case,
+      # dots to underscores.
+
+      # --- Sink: the backend -------------------------------------------------
+      DEBEZIUM_SINK_TYPE: http
+      DEBEZIUM_SINK_HTTP_URL: ${CDC_SINK_URL:-http://host.docker.internal:8000/api/cdc/events}
+      DEBEZIUM_SINK_HTTP_TIME_OUT_MS: "10000"
+      DEBEZIUM_SINK_HTTP_RETRIES: "3"
+      DEBEZIUM_SINK_HTTP_RETRY_INTERVAL_MS: "2000"
+
+      # --- Source: MySQL -----------------------------------------------------
+      DEBEZIUM_SOURCE_CONNECTOR_CLASS: io.debezium.connector.mysql.MySqlConnector
+      DEBEZIUM_SOURCE_TOPIC_PREFIX: legaldb
+      DEBEZIUM_SOURCE_DATABASE_HOSTNAME: ${CDC_MYSQL_HOST:-host.docker.internal}
+      DEBEZIUM_SOURCE_DATABASE_PORT: ${CDC_MYSQL_PORT:-3306}
+      DEBEZIUM_SOURCE_DATABASE_USER: ${CDC_MYSQL_USER:-debezium}
+      DEBEZIUM_SOURCE_DATABASE_PASSWORD: ${CDC_MYSQL_PASSWORD:?set CDC_MYSQL_PASSWORD in .env}
+      DEBEZIUM_SOURCE_DATABASE_INCLUDE_LIST: ${MYSQL_DATABASE:-legal_db}
+      # Must be unique across everything replicating from this MySQL server, and
+      # different from the server's own server_id — a collision makes MySQL drop
+      # one of the two connections at random, which presents as CDC silently
+      # stopping.
+      DEBEZIUM_SOURCE_DATABASE_SERVER_ID: ${CDC_SERVER_ID:-184054}
+
+      # Where it has read up to, and its record of table structure.
+      DEBEZIUM_SOURCE_OFFSET_STORAGE_FILE_FILENAME: /debezium/data/offsets.dat
+      DEBEZIUM_SOURCE_OFFSET_FLUSH_INTERVAL_MS: "5000"
+      DEBEZIUM_SOURCE_SCHEMA_HISTORY_INTERNAL: io.debezium.storage.file.history.FileSchemaHistory
+      DEBEZIUM_SOURCE_SCHEMA_HISTORY_INTERNAL_FILE_FILENAME: /debezium/data/schema-history.dat
+
+      # The events that make a new table document itself: `tableChanges` is the
+      # parsed form of each CREATE/ALTER/DROP, which services/cdc.py reads.
+      DEBEZIUM_SOURCE_INCLUDE_SCHEMA_CHANGES: "true"
+      # Capture structure at startup but NOT the existing rows. The default
+      # (`initial`) replays every row of every table through the sink to learn
+      # something information_schema answers in a single query.
+      DEBEZIUM_SOURCE_SNAPSHOT_MODE: schema_only
+
+      # --- Wire format -------------------------------------------------------
+      DEBEZIUM_FORMAT_VALUE: json
+      DEBEZIUM_FORMAT_VALUE_SCHEMAS_ENABLE: "false"
+      DEBEZIUM_FORMAT_KEY: json
+      DEBEZIUM_FORMAT_KEY_SCHEMAS_ENABLE: "false"
+
+      # A heartbeat keeps the recorded offset moving while the database is idle,
+      # so a quiet period cannot leave the connector resuming from a binlog file
+      # MySQL has already purged.
+      DEBEZIUM_SOURCE_HEARTBEAT_INTERVAL_MS: "300000"
+
+      QUARKUS_LOG_LEVEL: INFO
+      QUARKUS_LOG_CONSOLE_JSON: "false"
+
+      # The one setting that CANNOT be an environment variable.
+      #
+      # MySQL Connector/J refuses to connect when the server reports a timezone
+      # it cannot map to an IANA zone, and a MySQL running on Windows reports the
+      # Windows name — here "West Bank Gaza Daylight Time", which fails the
+      # connection outright rather than degrading.
+      #
+      # The driver property that fixes it, `connectionTimeZone`, is camelCase,
+      # and Connector/J compares driver property names case-sensitively. An
+      # environment variable cannot carry it: SmallRye lower-cases env names, so
+      # it arrives as `connectiontimezone` and is silently ignored. A JVM system
+      # property preserves case and outranks every other config source, and
+      # run.sh passes $JAVA_OPTS straight through to the JVM.
+      #
+      # `driver.` is Debezium's pass-through prefix for raw JDBC properties.
+      JAVA_OPTS: -Ddebezium.source.driver.connectionTimeZone=${CDC_TIMEZONE:-Asia/Hebron}
+    extra_hosts:
+      # The backend and MySQL both run on the host, not in this network.
+      - "host.docker.internal:host-gateway"
+
 volumes:
   qdrant_data:
+  debezium_data:
