@@ -42,6 +42,14 @@ data/concepts.json ◄──────── three-way sync ──────
 Everything on this half reports to the **Activity** tab, since by definition
 nobody is watching when it runs.
 
+> **This half is a "make it work" pass, not a finished product.** The automated
+> paths — sections 8, 9 and 10 — have been verified end to end against real
+> MySQL, Debezium and Qdrant, and they do what they claim. They have *not* been
+> designed for an end user. The flows assume someone who knows how the system is
+> put together, the wording is functional rather than considered, and nothing
+> here has been through design or usability review. Treat every screen in this
+> half as a working prototype: correct, and not yet kind.
+
 ## Project layout
 
 ```
