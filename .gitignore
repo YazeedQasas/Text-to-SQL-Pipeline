@@ -16,3 +16,21 @@ frontend/dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Runtime state under data/. `concepts.json` and `CONCEPTS.md` ARE committed —
+# the glossary is source, not state. These three are what the running system
+# writes about it:
+#   .concepts-sync-state.json  the sync's record of the last agreed state
+#   activity.jsonl             the Activity tab's event log
+#   review-queue.json          what the automated path documented, for review
+data/.concepts-sync-state.json
+data/activity.jsonl
+data/review-queue.json
+data/*.tmp
+
+# Debezium's offsets and schema history live in a named volume, but leave a
+# stray copy if the container is ever run with a bind mount.
+debezium/data/
+
+# Cygwin/Git-Bash crash dumps
+*.stackdump

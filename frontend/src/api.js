@@ -36,6 +36,137 @@ export function approveCatalog(items) {
   return postJson("/api/catalog/approve", { items });
 }
 
+/** GET JSON, unwrapping FastAPI's `detail` on failure. */
+async function getJson(path) {
+  const response = await fetch(`${API_BASE_URL}${path}`);
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = new Error(data?.detail || `Request failed with status ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return data;
+}
+
+/**
+ * Everything the automated path documented.
+ *
+ * Two kinds come back, distinguished by `indexed`: flagged tables that were NOT
+ * written to Qdrant and cannot be queried yet, and tables that were indexed
+ * automatically and work already but whose description nobody has read.
+ */
+export function fetchReviewQueue() {
+  return getJson("/api/catalog/review-queue");
+}
+
+/**
+ * The document currently indexed for one table, for editing.
+ *
+ * One table by name, not a catalog listing — it backs the edit button on an
+ * activity event, where you are already looking at what the model wrote. Once a
+ * review-queue entry has been cleared this is the only way back to it, because
+ * a scan only reports tables that differ from the index.
+ */
+export function fetchTableDoc(tableName) {
+  return getJson(`/api/catalog/tables/${encodeURIComponent(tableName)}`);
+}
+
+/** Drop an entry without changing what is indexed. */
+export async function dismissReview(tableName) {
+  const response = await fetch(
+    `${API_BASE_URL}/api/catalog/review-queue/${encodeURIComponent(tableName)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new Error(data?.detail || `Request failed with status ${response.status}`);
+  }
+  return response.json();
+}
+
+/** What the CDC worker is doing, plus how many tables are waiting for review. */
+export function fetchCdcStatus() {
+  return getJson("/api/cdc/status");
+}
+
+/** The glossary as data/concepts.json has it, plus Qdrant's point count. */
+export function fetchConcepts() {
+  return getJson("/api/concepts");
+}
+
+/**
+ * Reconcile concepts.json against Qdrant.
+ *
+ * Resolves rather than throws when the sync is refused — a refusal is a result
+ * the user has to read (`ok: false`, `refused_reason`), not a transport error,
+ * and it is retried with `force` once they have.
+ */
+export function syncConcepts({ force = false } = {}) {
+  return postJson(`/api/concepts/sync?force=${force ? "true" : "false"}`, {});
+}
+
+/** Replace concepts.json wholesale, then reconcile. Same refusal semantics. */
+export async function uploadConcepts(concepts, { force = false } = {}) {
+  const response = await fetch(`${API_BASE_URL}/api/concepts`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ concepts, force }),
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(
+      typeof data?.detail === "string"
+        ? data.detail
+        : `Request failed with status ${response.status}`,
+    );
+  }
+  return data;
+}
+
+/** The most recent activity events, newest first. */
+export function fetchActivity(limit = 100) {
+  return getJson(`/api/activity?limit=${limit}`);
+}
+
+/**
+ * Empty the activity log.
+ *
+ * Only the record of what happened — the review queue, the schema index and
+ * everything else are untouched.
+ */
+export async function clearActivity() {
+  const response = await fetch(`${API_BASE_URL}/api/activity`, { method: "DELETE" });
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    throw new Error(data?.detail || `Request failed with status ${response.status}`);
+  }
+  return response.json();
+}
+
+/**
+ * Subscribe to the live activity stream.
+ *
+ * A plain EventSource is enough here — unlike the query stream this is a GET
+ * with no body, so none of submitQueryStream's manual fetch/parse machinery is
+ * needed. The browser also reconnects on its own if the backend restarts.
+ *
+ * @returns {() => void} an unsubscribe function
+ */
+export function subscribeToActivity(onEvent, onError) {
+  const source = new EventSource(`${API_BASE_URL}/api/activity/stream`);
+
+  source.onmessage = (message) => {
+    try {
+      onEvent(JSON.parse(message.data));
+    } catch {
+      // A frame we can't parse is not worth tearing the stream down for.
+    }
+  };
+  source.onerror = () => onError?.();
+
+  return () => source.close();
+}
+
 /**
  * Run a query against the streaming endpoint, reporting progress as it happens.
  *

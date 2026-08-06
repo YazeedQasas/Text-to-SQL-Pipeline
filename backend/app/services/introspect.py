@@ -15,6 +15,8 @@ pipeline — introspection needs no extra grants, because MySQL exposes
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import date, datetime, time, timedelta
+from decimal import Decimal
 
 from app.config import MYSQL_DATABASE
 from app.services.db import execute_select
@@ -171,7 +173,42 @@ async def sample_rows(table_name: str, known_tables: set[str], limit: int) -> li
     except Exception as exc:  # noqa: BLE001 — sampling is best-effort
         logger.warning("Could not sample rows from %s: %s", table_name, exc)
         return []
-    return rows
+    return [json_safe_row(row) for row in rows]
+
+
+def json_safe(value: object) -> object:
+    """Convert one MySQL cell into something json.dumps can write.
+
+    The driver returns real Python objects for several common column types, and
+    none of them are JSON-serializable: DECIMAL becomes `Decimal`, DATE and
+    DATETIME become `date`/`datetime`, TIME becomes `timedelta`, and binary
+    columns become `bytes`. Sample rows travel from here into the review queue
+    file, the activity log and the SSE stream, so one unconverted cell breaks
+    the whole documentation run for that table.
+
+    Found the hard way: a table with `amount DECIMAL(10,2)` and `paid_date DATE`
+    failed with "Object of type Decimal is not JSON serializable", after an
+    earlier test table of only INT/TEXT columns passed cleanly.
+
+    DECIMAL becomes a STRING rather than a float on purpose. These are money
+    values; float would silently round them, and the reviewer only ever reads
+    them as text anyway.
+    """
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+    if isinstance(value, timedelta):
+        return str(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        # Binary columns are not worth showing the reviewer, but their presence
+        # is: a length reads better than mojibake from a bad decode.
+        return f"<{len(bytes(value))} bytes>"
+    return value
+
+
+def json_safe_row(row: dict) -> dict:
+    return {key: json_safe(value) for key, value in row.items()}
 
 
 async def row_count(table_name: str, known_tables: set[str]) -> int:

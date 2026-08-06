@@ -164,9 +164,9 @@ def test_long_cell_values_are_truncated():
 
 
 def test_table_under_review_is_excluded_from_its_own_domain_context():
-    from app.routers.catalog import _domain_context
+    from app.services.documenter import domain_context
 
-    context = _domain_context(
+    context = domain_context(
         {"cases": {"description": "Legal cases."}, "aa_aa_a": {"description": "???"}}, "aa_aa_a"
     )
 
@@ -322,3 +322,71 @@ def test_approve_handles_a_mixed_batch(monkeypatch):
     assert body["upserted"] == ["appeals"]
     assert body["deleted"] == ["old_backup"]
     assert body["skipped"] == ["aa_aa_a"]
+
+
+# --- MySQL types that JSON cannot write ---------------------------------------
+
+
+def test_sample_row_values_are_made_json_safe():
+    """A table with money or dates must not break its own documentation run.
+
+    Regression: `case_fees(amount DECIMAL(10,2), paid_date DATE)` failed with
+    "Object of type Decimal is not JSON serializable" while an earlier test
+    table of INT/TEXT columns passed. Sample rows travel into the review queue
+    file, the activity log and the SSE stream, so one unconverted cell costs the
+    whole run — and DECIMAL/DATE are ordinary column types, not exotic ones.
+    """
+    import json
+    from datetime import date, datetime, time, timedelta
+    from decimal import Decimal
+
+    from app.services.introspect import json_safe_row
+
+    row = json_safe_row(
+        {
+            "amount": Decimal("250.00"),
+            "paid_date": date(2024, 1, 15),
+            "created_at": datetime(2024, 1, 15, 9, 30, 0),
+            "start_time": time(9, 30),
+            "elapsed": timedelta(hours=2, minutes=5),
+            "blob": b"\x00\x01\x02\x03",
+            "receipt_no": "RCP-2024-0001",
+            "case_id": 1,
+            "note": None,
+        }
+    )
+
+    # The point of the exercise: this must not raise.
+    json.dumps(row, ensure_ascii=False)
+
+    # DECIMAL becomes a string, not a float — these are money values and float
+    # would silently round them.
+    assert row["amount"] == "250.00"
+    assert isinstance(row["amount"], str)
+
+    assert row["paid_date"] == "2024-01-15"
+    assert row["created_at"] == "2024-01-15T09:30:00"
+    assert row["start_time"] == "09:30:00"
+    assert row["elapsed"] == "2:05:00"
+    assert row["blob"] == "<4 bytes>"
+
+    # Values JSON already handles are passed through untouched.
+    assert row["receipt_no"] == "RCP-2024-0001"
+    assert row["case_id"] == 1
+    assert row["note"] is None
+
+
+def test_the_review_queue_survives_a_row_that_slipped_through_unconverted():
+    """Backstop for the layer above: `default=str` on the write.
+
+    json_safe_row is the real fix, but the queue must not be wedgeable by a
+    value that reaches it some other way.
+    """
+    import json
+    from decimal import Decimal
+
+    from app.services import review_queue
+
+    body = json.dumps({"rows": [{"amount": Decimal("250.00")}]}, default=str)
+    assert "250.00" in body
+    assert review_queue is not None

@@ -126,3 +126,103 @@ class ApproveResponse(BaseModel):
     upserted: list[str]
     deleted: list[str]
     skipped: list[str]
+
+
+# --- Automated documentation (CDC) --------------------------------------------
+
+
+class ReviewEntry(BaseModel):
+    """A table the automated path documented, waiting to be read by a human.
+
+    Shaped to match TableChangeModel closely enough that the Schema updates tab
+    renders it with the same review card, so a table found by a Debezium event
+    at 3am is dealt with exactly like one found by clicking Scan.
+    """
+
+    table_name: str
+    change_type: str
+    summary: str
+    doc: TableDocModel
+    verdict: VerdictModel
+    sample_rows: list[dict] = Field(default_factory=list)
+    row_count: int = -1
+    # False: the reviewer flagged it, so it is NOT in Qdrant and cannot be
+    # queried until a human approves it. True: it is already indexed and
+    # working — this entry exists only so the description can be improved.
+    indexed: bool = False
+    detected_at: float = 0.0
+
+
+class ReviewQueueResponse(BaseModel):
+    entries: list[ReviewEntry]
+
+
+class CdcStatusResponse(BaseModel):
+    enabled: bool
+    running: bool
+    events_received: int
+    # Tables that have been seen but whose debounce window has not closed yet.
+    pending_tables: list[str] = Field(default_factory=list)
+    debounce_seconds: float
+    # Tables documented but not indexed, because the reviewer flagged them.
+    # This is the number worth badging: they are not queryable yet.
+    awaiting_review: int = 0
+    # Tables indexed automatically and never read by anyone. Informational.
+    auto_documented: int = 0
+
+
+# --- Legal concepts -----------------------------------------------------------
+
+
+class ConceptModel(BaseModel):
+    """One glossary entry. Field names match data/concepts.json exactly."""
+
+    id: str = Field(..., min_length=1, max_length=100)
+    term: str = Field("", max_length=200)
+    aliases: list[str] = Field(default_factory=list)
+    definition: str = Field("", max_length=4000)
+    # A SQL fragment — a predicate, an expression or a join path — never a
+    # complete query. See data/CONCEPTS.md.
+    sql: str = Field("", max_length=2000)
+    tables: list[str] = Field(default_factory=list)
+
+
+class ConceptsResponse(BaseModel):
+    concepts: list[ConceptModel]
+    # What Qdrant holds right now, so the UI can show the two sides without a
+    # second round trip.
+    qdrant_count: int = 0
+    in_sync: bool = True
+
+
+class ConceptUploadRequest(BaseModel):
+    """A replacement concepts.json, posted from the browser.
+
+    `force` skips the delete rail. It is the explicit second step after a sync
+    was refused for wanting to delete too much.
+    """
+
+    concepts: list[ConceptModel]
+    force: bool = False
+
+
+class ConceptConflictModel(BaseModel):
+    concept_id: str
+    file_version: dict
+    qdrant_version: dict
+
+
+class ConceptSyncResponse(BaseModel):
+    ok: bool
+    trigger: str
+    upserted: list[str] = Field(default_factory=list)
+    deleted_from_qdrant: list[str] = Field(default_factory=list)
+    added_to_file: list[str] = Field(default_factory=list)
+    updated_in_file: list[str] = Field(default_factory=list)
+    removed_from_file: list[str] = Field(default_factory=list)
+    conflicts: list[ConceptConflictModel] = Field(default_factory=list)
+    # Set when the delete rail refused the plan; the sync can be retried with
+    # force once a human has read this.
+    refused_reason: str = ""
+    file_count: int = 0
+    qdrant_count: int = 0

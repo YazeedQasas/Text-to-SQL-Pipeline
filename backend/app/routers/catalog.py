@@ -12,23 +12,30 @@ idempotent.
 The LLM's role ends at the scan. It flags tables that look like junk and drafts
 descriptions to start from; the operator then edits freely and whatever they
 submit is what gets indexed. Nothing is re-judged on the way in.
+
+The document-building itself lives in services/documenter.py, shared with the
+CDC path (services/cdc.py) which does the same job unattended off a Debezium
+event. Both must produce identical payloads for the same table, or a table
+documented automatically and then edited by hand would show as permanently
+changed in every subsequent diff.
 """
 
 import logging
 
 from fastapi import APIRouter, HTTPException
 
-from app.config import CATALOG_SAMPLE_ROWS
 from app.models import (
     ApproveRequest,
     ApproveResponse,
     ColumnChangeModel,
+    ReviewEntry,
+    ReviewQueueResponse,
     ScanResponse,
-    TableChangeModel,
     TableDocModel,
+    TableChangeModel,
     VerdictModel,
 )
-from app.services import introspect, reviewer
+from app.services import introspect, review_queue, reviewer
 from app.services.catalog import (
     build_doc_text,
     delete_tables,
@@ -36,116 +43,14 @@ from app.services.catalog import (
     fetch_indexed_tables,
     upsert_tables,
 )
+from app.services.documenter import build_doc, build_packet
 from app.services.embeddings import embed_texts
-from app.services.introspect import LiveTable
-from app.services.reviewer import ReviewPacket, Verdict
-from app.services.schema_diff import TableChange, diff_schema
+from app.services.reviewer import Verdict
+from app.services.schema_diff import diff_schema
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
-
-
-def _domain_context(indexed: dict[str, dict], exclude: str) -> list[dict]:
-    """Descriptions of everything already indexed, minus the table being judged.
-
-    The table under review is excluded so the model judges it against the rest
-    of the catalog rather than against its own (possibly wrong) description.
-    """
-    return [
-        {"table_name": name, "description": payload.get("description", "")}
-        for name, payload in sorted(indexed.items())
-        if name != exclude
-    ]
-
-
-def _live_columns_as_dicts(live: LiveTable) -> list[dict]:
-    return [
-        {"name": c.name, "type": c.type, "nullable": c.nullable, "comment": c.comment}
-        for c in live.columns
-    ]
-
-
-async def _sample(table_name: str, known_tables: set[str]) -> tuple[list[dict], int]:
-    if table_name not in known_tables:
-        return [], -1
-    rows = await introspect.sample_rows(table_name, known_tables, CATALOG_SAMPLE_ROWS)
-    count = await introspect.row_count(table_name, known_tables)
-    return rows, count
-
-
-async def _build_packet(
-    change: TableChange, indexed: dict[str, dict], known_tables: set[str]
-) -> ReviewPacket:
-    indexed_doc = change.indexed or {}
-    indexed_columns = {c["name"]: c for c in indexed_doc.get("columns", [])}
-
-    if change.live is not None:
-        columns = [
-            {**column, "description": indexed_columns.get(column["name"], {}).get("description", "")}
-            for column in _live_columns_as_dicts(change.live)
-        ]
-        primary_key = change.live.primary_key
-        foreign_keys = [
-            {
-                "column": fk.column,
-                "references_table": fk.references_table,
-                "references_column": fk.references_column,
-            }
-            for fk in change.live.foreign_keys
-        ]
-    else:
-        columns = indexed_doc.get("columns", [])
-        primary_key = indexed_doc.get("primary_key", "")
-        foreign_keys = indexed_doc.get("foreign_keys", [])
-
-    sample_rows, row_count = await _sample(change.table_name, known_tables)
-
-    return ReviewPacket(
-        table_name=change.table_name,
-        change_summary=change.summary(),
-        columns=columns,
-        primary_key=primary_key,
-        foreign_keys=foreign_keys,
-        sample_rows=sample_rows,
-        row_count=row_count,
-        current_description=indexed_doc.get("description", ""),
-        domain_context=_domain_context(indexed, change.table_name),
-    )
-
-
-def _build_doc(change: TableChange, packet: ReviewPacket, verdict: Verdict) -> TableDocModel:
-    """Prefill the document the user will edit and eventually approve.
-
-    Descriptions resolve in order: what is already indexed for that column,
-    then the reviewer's suggestion, then the MySQL COLUMN_COMMENT. The table
-    description keeps whatever is already indexed — the reviewer's suggestion
-    travels separately on the verdict so the UI can offer it without silently
-    overwriting curated text.
-    """
-    columns = []
-    for column in packet.columns:
-        description = (
-            column.get("description")
-            or verdict.suggested_column_descriptions.get(column["name"], "")
-            or column.get("comment", "")
-        )
-        columns.append(
-            {
-                "name": column["name"],
-                "type": column["type"],
-                "nullable": bool(column.get("nullable")),
-                "description": description.strip(),
-            }
-        )
-
-    return TableDocModel(
-        table_name=change.table_name,
-        description=(packet.current_description or verdict.suggested_description).strip(),
-        primary_key=packet.primary_key,
-        columns=columns,
-        foreign_keys=packet.foreign_keys,
-    )
 
 
 @router.post("/scan", response_model=ScanResponse)
@@ -172,7 +77,7 @@ async def scan() -> ScanResponse:
     known_tables = set(live)
 
     reviewable = [change for change in changes if reviewer.needs_review(change)]
-    packets = [await _build_packet(change, indexed, known_tables) for change in reviewable]
+    packets = [await build_packet(change, indexed, known_tables) for change in reviewable]
     verdicts = await reviewer.review_many(packets)
     reviewed = dict(zip((c.table_name for c in reviewable), zip(packets, verdicts)))
 
@@ -183,7 +88,7 @@ async def scan() -> ScanResponse:
         else:
             # A dropped table is a mechanical delete: nothing to sample, nothing
             # to judge. It still needs approval, but not an LLM call.
-            packet = await _build_packet(change, indexed, known_tables)
+            packet = await build_packet(change, indexed, known_tables)
             verdict = Verdict(needs_edit=False, severity=reviewer.SEVERITY_OK)
 
         results.append(
@@ -192,7 +97,7 @@ async def scan() -> ScanResponse:
                 table_name=change.table_name,
                 summary=change.summary(),
                 column_changes=[ColumnChangeModel(**vars(c)) for c in change.column_changes],
-                doc=_build_doc(change, packet, verdict),
+                doc=build_doc(change, packet, verdict),
                 verdict=VerdictModel(**vars(verdict)),
                 sample_rows=packet.sample_rows,
                 row_count=packet.row_count,
@@ -235,8 +140,75 @@ async def approve(request: ApproveRequest) -> ApproveResponse:
         logger.exception("Syncing approved changes to Qdrant failed")
         raise HTTPException(status_code=502, detail=f"Sync to Qdrant failed: {exc}") from exc
 
+    # Anything just indexed or deleted has now been seen by a person, so it
+    # leaves the review queue whether it arrived from a scan or from CDC. Skips
+    # stay: skipping is "not now", and it should still be there next time.
+    for item in upserts + deletes:
+        review_queue.remove(item.doc.table_name)
+
     return ApproveResponse(
         upserted=[item.doc.table_name for item in upserts],
         deleted=[item.doc.table_name for item in deletes],
         skipped=[item.doc.table_name for item in skips],
     )
+
+
+@router.get("/tables/{table_name}", response_model=TableDocModel)
+async def get_table_doc(table_name: str) -> TableDocModel:
+    """The document currently indexed for one table, for editing.
+
+    Deliberately one table by name, not a catalog listing. It backs the "edit
+    these descriptions" button on an activity event: you are already looking at
+    what the model wrote and want to change it. Saving goes back through
+    /approve, which overwrites the point verbatim.
+
+    This is the only route to a description once its review-queue entry has been
+    cleared — a scan will not surface the table, because a scan reports what
+    DIFFERS from the index and this matches it.
+    """
+    try:
+        indexed = await fetch_indexed_tables()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Reading indexed schema docs failed")
+        raise HTTPException(status_code=503, detail=f"Could not read from Qdrant: {exc}") from exc
+
+    payload = indexed.get(table_name)
+    if payload is None:
+        raise HTTPException(status_code=404, detail=f"'{table_name}' is not indexed")
+
+    # The stored payload also carries `level` and the derived `doc_text`;
+    # pydantic drops both, and doc_text is regenerated on every upsert anyway.
+    return TableDocModel(**payload)
+
+
+@router.get("/review-queue", response_model=ReviewQueueResponse)
+async def list_review_queue() -> ReviewQueueResponse:
+    """Everything the automated path documented, flagged or not.
+
+    Rendered by the same review card as a scan result. Two kinds arrive here:
+
+    - `indexed: false` — flagged by the reviewer and NOT written to Qdrant. It
+      cannot be queried until someone approves it.
+    - `indexed: true`  — already in Qdrant and working. It is listed so the
+      description the model wrote unattended can actually be read, and fixed if
+      it is thin. A scan will never show it: a scan reports tables that differ
+      from what is indexed, and this one matches.
+
+    Editing either kind goes through /approve, which writes what it is given
+    verbatim and clears the entry.
+    """
+    return ReviewQueueResponse(entries=[ReviewEntry(**entry) for entry in review_queue.listing()])
+
+
+@router.delete("/review-queue/{table_name}")
+async def dismiss_review(table_name: str) -> dict:
+    """Drop an entry without changing what is indexed.
+
+    Means "I have read this and I am happy" for an already-indexed table, and
+    "the reviewer was right, this is junk" for a flagged one. Neither adds the
+    table to any ignore list — it will come back if the table changes again.
+    """
+    removed = review_queue.remove(table_name)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"'{table_name}' is not in the review queue")
+    return {"dismissed": table_name}

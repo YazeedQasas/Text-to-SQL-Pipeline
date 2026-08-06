@@ -1,8 +1,24 @@
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Repo root, resolved from this file (backend/app/config.py) rather than the
+# process working directory — uvicorn is started from backend/ but the shared
+# data/ directory sits one level above, and a relative default would break
+# depending on where the server happened to be launched from.
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _path_from_env(name: str, default_relative: str) -> Path:
+    """Resolve a configurable path, anchoring relative values at the repo root."""
+    raw = os.getenv(name)
+    if not raw:
+        return REPO_ROOT / default_relative
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else REPO_ROOT / path
 
 # --- MySQL (read-only user; see db/03_readonly_user.sql) -------------------
 MYSQL_HOST = os.getenv("MYSQL_HOST", "127.0.0.1")
@@ -17,7 +33,7 @@ QDRANT_API_KEY = os.getenv("QDRANT_API_KEY") or None
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "schema_docs")
 RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "5"))
 
-# --- Domain glossary (ingestion/concepts.py) ---------------------------------
+# --- Domain glossary (data/concepts.json) ------------------------------------
 # Palestinian legal vocabulary that has no counterpart in the schema: nothing
 # stores "محكمة الصلح", and no column marks a case "مدورة". Each point maps such
 # a term to the SQL fragment that expresses it.
@@ -42,7 +58,8 @@ CONCEPT_SCORE_THRESHOLD = float(os.getenv("CONCEPT_SCORE_THRESHOLD", "0.60"))
 # How long the in-memory copy of the glossary lives. Lexical matching tests
 # every concept's surface forms against the question, so the whole (small)
 # collection is held in memory rather than searched. The TTL is what makes a
-# re-run of ingest_concepts.py take effect without restarting the backend.
+# concept sync take effect without restarting the backend. The sync also busts
+# this cache directly, so the TTL only matters for edits made some other way.
 CONCEPT_CACHE_TTL_SECONDS = float(os.getenv("CONCEPT_CACHE_TTL_SECONDS", "300"))
 # How many of the RETRIEVAL_TOP_K schema slots matched concepts may claim.
 # A concept's SQL fragment references its tables by name, so those tables must
@@ -108,6 +125,71 @@ CONTEXT_CARRY_TABLES = int(os.getenv("CONTEXT_CARRY_TABLES", "3"))
 # --- Query execution safety ---------------------------------------------------
 MAX_RESULT_ROWS = int(os.getenv("MAX_RESULT_ROWS", "200"))
 SQL_STATEMENT_TIMEOUT_SECONDS = int(os.getenv("SQL_STATEMENT_TIMEOUT_SECONDS", "10"))
+
+# --- Legal concept file sync --------------------------------------------------
+# The JSON file a user edits, and the snapshot that makes the sync three-way.
+# Without the snapshot, "removed from the file" and "added to Qdrant" are
+# indistinguishable, and so are "removed from Qdrant" and "added to the file" —
+# a two-way diff would guess, and half its guesses delete data.
+CONCEPTS_FILE = _path_from_env("CONCEPTS_FILE", "data/concepts.json")
+CONCEPTS_SYNC_STATE_FILE = _path_from_env(
+    "CONCEPTS_SYNC_STATE_FILE", "data/.concepts-sync-state.json"
+)
+# Refuse any sync that would delete more than this fraction of either side, and
+# raise a warning instead. This is the rail against the failure that actually
+# happens: Qdrant restarts on an empty volume, every concept looks deleted, and
+# an unguarded reconcile empties concepts.json to match. Set to 1.0 to disable.
+CONCEPT_SYNC_DELETE_RATIO = float(os.getenv("CONCEPT_SYNC_DELETE_RATIO", "0.30"))
+# Below this count the ratio is not applied — going from 2 concepts to 1 is a
+# 50% delete but obviously fine, and a ratio alone would make small collections
+# impossible to edit.
+CONCEPT_SYNC_DELETE_FLOOR = int(os.getenv("CONCEPT_SYNC_DELETE_FLOOR", "4"))
+
+# --- Qdrant deletion watcher --------------------------------------------------
+# Qdrant runs locally in Docker, so its logs are the only notification available
+# when someone deletes points through the dashboard or the raw API.
+#
+# The logs say a delete HAPPENED, never WHAT was deleted: point deletes appear
+# only as an actix access line ("POST /collections/legal_concepts/points/delete")
+# with no request body. So the watcher is a trigger for a full reconcile, never
+# a source of identity. Collection drops do get a named line.
+#
+# Only REST (6333) is logged. A delete issued over gRPC (6334) is invisible —
+# qdrant-client defaults to REST, so our own writes are covered.
+QDRANT_WATCH_ENABLED = os.getenv("QDRANT_WATCH_ENABLED", "true").lower() == "true"
+QDRANT_CONTAINER = os.getenv("QDRANT_CONTAINER", "texttosql-qdrant")
+# Coalescing window. A single "delete these 12 points" call from the dashboard
+# arrives as one line, but a script deleting them one at a time arrives as 12 —
+# and reconciling after each would re-embed the whole file a dozen times.
+QDRANT_WATCH_DEBOUNCE_SECONDS = float(os.getenv("QDRANT_WATCH_DEBOUNCE_SECONDS", "3.0"))
+
+# --- Debezium CDC -------------------------------------------------------------
+# Debezium Server tails the MySQL binlog and POSTs change events to
+# /api/cdc/events (its HTTP sink). See debezium/application.properties.
+CDC_ENABLED = os.getenv("CDC_ENABLED", "true").lower() == "true"
+# How long a newly-seen table waits before it is documented. A CREATE TABLE
+# reaches us the instant it commits, when the table is still empty — and sample
+# rows are the reviewer's strongest evidence for telling a real domain table from
+# somebody's scratch import. Waiting lets the INSERTs that follow arrive first.
+CDC_DEBOUNCE_SECONDS = float(os.getenv("CDC_DEBOUNCE_SECONDS", "20"))
+# Hard ceiling on that wait. A table that keeps receiving writes would otherwise
+# have its debounce extended forever and never get documented at all.
+CDC_MAX_WAIT_SECONDS = float(os.getenv("CDC_MAX_WAIT_SECONDS", "120"))
+# What the automated path documented, kept so a human can read it afterwards —
+# both the tables it flagged (not indexed, needs a person) and the ones it was
+# happy with (already indexed, but nobody has read the description). Unlike the
+# manual scan flow, where the browser holds the run state between scan and
+# approve, nobody is watching when CDC fires, so this has to outlive the request.
+REVIEW_QUEUE_FILE = _path_from_env("REVIEW_QUEUE_FILE", "data/review-queue.json")
+
+# --- Activity log -------------------------------------------------------------
+# Everything the automated paths do lands here and is streamed to the Activity
+# tab. Append-only JSONL: it is a log, it is read newest-first, and a database
+# for it would be the only stateful dependency in the backend.
+ACTIVITY_LOG_FILE = _path_from_env("ACTIVITY_LOG_FILE", "data/activity.jsonl")
+# Events held in memory for instant reads. Older ones stay on disk and are read
+# back from the file when the tab asks for more.
+ACTIVITY_RING_SIZE = int(os.getenv("ACTIVITY_RING_SIZE", "500"))
 
 # --- CORS (frontend dev server) ----------------------------------------------
 CORS_ALLOW_ORIGINS = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:5173").split(",")
