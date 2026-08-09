@@ -270,7 +270,7 @@ async def document_tables(table_names: list[str], trigger: str) -> None:
         activity.record(
             activity.SOURCE_CDC,
             "documentation_failed",
-            f"Could not read the schema to document {', '.join(table_names)}: {exc}",
+            f"تعذّرت قراءة بنية الجداول لتوثيق {'، '.join(table_names)}: {exc}",
             level=activity.LEVEL_ERROR,
             tables=table_names,
         )
@@ -295,7 +295,7 @@ async def document_tables(table_names: list[str], trigger: str) -> None:
             activity.record(
                 activity.SOURCE_CDC,
                 "documentation_failed",
-                f"Could not document '{change.table_name}': {exc}",
+                f"تعذّر توثيق الجدول '{change.table_name}': {exc}",
                 level=activity.LEVEL_ERROR,
                 table_name=change.table_name,
             )
@@ -311,7 +311,7 @@ async def _document_one(change, indexed: dict[str, dict], known_tables: set[str]
         activity.record(
             activity.SOURCE_CDC,
             "table_removed",
-            f"'{change.table_name}' was dropped in MySQL — its schema document was removed.",
+            f"حُذف الجدول '{change.table_name}' من قاعدة البيانات — وأُزيل وصفه من الفهرس.",
             level=activity.LEVEL_INFO,
             table_name=change.table_name,
             trigger=trigger,
@@ -344,7 +344,7 @@ async def _document_one(change, indexed: dict[str, dict], known_tables: set[str]
         activity.record(
             activity.SOURCE_CDC,
             "documentation_flagged",
-            f"'{change.table_name}' was documented but needs a human: {reason}",
+            f"تم توثيق الجدول '{change.table_name}' لكنه يحتاج مراجعة بشرية: {reason}",
             level=activity.LEVEL_WARNING,
             table_name=change.table_name,
             severity=verdict.severity,
@@ -380,7 +380,7 @@ async def _document_one(change, indexed: dict[str, dict], known_tables: set[str]
     activity.record(
         activity.SOURCE_CDC,
         "table_documented",
-        f"'{change.table_name}' was documented automatically and is now queryable.",
+        f"تم توثيق الجدول '{change.table_name}' تلقائيًا وأصبح قابلًا للاستعلام.",
         level=activity.LEVEL_INFO,
         table_name=change.table_name,
         change_type=change.change_type,

@@ -28,15 +28,21 @@ logger = logging.getLogger(__name__)
 # The ordered stage list is sent to the client before the run starts, so the UI
 # can render the whole progress list (including not-yet-reached steps) without
 # duplicating this definition in the frontend.
+#
+# Labels and details are Arabic because they are read by the end user on the Ask
+# page, next to an Arabic question and an Arabic answer — this is the product's
+# "thinking" text, not a developer log. Anything that would leak a table name, a
+# row count or a SQL fragment into that text is deliberately left out: those are
+# admin-side facts, and the reader of this page has no use for them.
 STAGES: list[dict[str, str]] = [
-    {"id": "embedding", "label": "Embedding your question"},
-    {"id": "concepts", "label": "Matching domain terms"},
-    {"id": "retrieval", "label": "Searching the schema index"},
-    {"id": "prompt", "label": "Building the schema prompt"},
-    {"id": "sql_generation", "label": "Generating SQL"},
-    {"id": "sql_validation", "label": "Checking the SQL is read-only"},
-    {"id": "sql_execution", "label": "Running the query"},
-    {"id": "answer_generation", "label": "Writing the answer"},
+    {"id": "embedding", "label": "تحليل السؤال"},
+    {"id": "concepts", "label": "مطابقة المصطلحات القانونية"},
+    {"id": "retrieval", "label": "البحث عن المعلومات ذات الصلة"},
+    {"id": "prompt", "label": "تجهيز المعلومات"},
+    {"id": "sql_generation", "label": "إعداد عملية البحث"},
+    {"id": "sql_validation", "label": "التحقق من سلامة العملية"},
+    {"id": "sql_execution", "label": "استخراج البيانات"},
+    {"id": "answer_generation", "label": "كتابة الإجابة"},
 ]
 
 
@@ -84,10 +90,13 @@ class UsageEvent:
 PipelineEvent = StageEvent | TokenEvent | UsageEvent | QueryResponse
 
 
-CONTEXT_FULL_MESSAGE = (
-    "امتلأت ذاكرة المحادثة. ابدأ محادثة جديدة للمتابعة."
-    " (Conversation context is full — start a new chat.)"
-)
+CONTEXT_FULL_MESSAGE = "امتلأت ذاكرة المحادثة. ابدأ محادثة جديدة للمتابعة."
+
+# Failures the user sees. The exception text behind each one is English, often a
+# raw driver message, so it goes to the log and never to the page.
+NO_TABLES_MESSAGE = "لم يتم العثور على معلومات ذات صلة بهذا السؤال."
+SQL_REJECTED_MESSAGE = "تعذّر إتمام هذا الطلب لأنه لم يجتز فحص السلامة."
+SQL_FAILED_MESSAGE = "تعذّر استخراج البيانات المطلوبة."
 
 
 async def run_pipeline(
@@ -105,11 +114,7 @@ async def run_pipeline(
     vectors = await embed_texts([question, *grams])
     query_vector = vectors[0]
     gram_vectors = list(zip(grams, vectors[1:]))
-    yield StageEvent(
-        "embedding",
-        "completed",
-        f"{len(query_vector)}-dimension vector, {len(grams)} question fragments",
-    )
+    yield StageEvent("embedding", "completed", "تمت قراءة السؤال وتحليل مقاطعه")
 
     # Runs before retrieval rather than alongside it: a matched concept steers
     # which tables are chosen, so the schema search needs the result. The cost
@@ -122,15 +127,11 @@ async def run_pipeline(
         "concepts",
         "completed",
         # Most questions contain no domain term at all, and the empty case is
-        # the expected one — say so plainly rather than showing a bare "0".
-        # A lexical hit has no similarity score worth showing, so it is labelled
-        # by how it was found instead of by a number that means nothing.
-        ", ".join(
-            f"{c.term} ({'exact' if c.matched_by == 'lexical' else f'{c.score:.2f}'})"
-            for c in concepts
-        )
-        if concepts
-        else "no domain terms matched",
+        # the expected one — say so plainly rather than showing a bare "0". The
+        # matched terms themselves are worth naming: they are Arabic, and seeing
+        # which one fired is how a user notices the system read them wrongly.
+        # Similarity scores are not shown — they mean nothing to this reader.
+        "، ".join(c.term for c in concepts) if concepts else "لم تُطابق أي مصطلحات قانونية",
         content=glossary or None,
     )
 
@@ -140,12 +141,8 @@ async def run_pipeline(
     carry = list(history[-1].table_names) if history else []
     tables = await search_with_carryover(query_vector, carry, concepts)
     if not tables:
-        raise PipelineError("No relevant tables found for this question.")
-    yield StageEvent(
-        "retrieval",
-        "completed",
-        f"{len(tables)} tables: " + ", ".join(t.table_name for t in tables),
-    )
+        raise PipelineError(NO_TABLES_MESSAGE)
+    yield StageEvent("retrieval", "completed", "تم تحديد المعلومات ذات الصلة")
 
     yield StageEvent("prompt", "started")
     schema_context = format_tables_for_prompt(tables)
@@ -170,13 +167,7 @@ async def run_pipeline(
         )
         raise PipelineError(CONTEXT_FULL_MESSAGE, status_code=413)
 
-    yield StageEvent(
-        "prompt",
-        "completed",
-        f"{len(schema_context)} characters of schema context · "
-        f"{budget.used_tokens}/{budget.limit_tokens} tokens, {len(history)} past turns",
-        content=schema_context,
-    )
+    yield StageEvent("prompt", "completed", "تم تجهيز المعلومات اللازمة للإجابة")
 
     yield StageEvent("sql_generation", "started")
     sql_chunks: list[str] = []
@@ -198,16 +189,16 @@ async def run_pipeline(
         safe_sql = enforce_select_only(raw_sql)
     except SQLGuardError as exc:
         logger.warning("Rejected generated SQL: %s | sql=%r", exc, raw_sql)
-        raise PipelineError(f"Generated SQL was rejected: {exc}") from exc
-    yield StageEvent("sql_validation", "completed", "single SELECT, row limit applied")
+        raise PipelineError(SQL_REJECTED_MESSAGE) from exc
+    yield StageEvent("sql_validation", "completed", "عملية قراءة فقط، دون أي تعديل على البيانات")
 
     yield StageEvent("sql_execution", "started")
     try:
         columns, rows = await execute_select(safe_sql)
     except Exception as exc:
         logger.warning("SQL execution failed: %s | sql=%r", exc, safe_sql)
-        raise PipelineError(f"SQL execution failed: {exc}") from exc
-    yield StageEvent("sql_execution", "completed", f"{len(rows)} rows returned")
+        raise PipelineError(SQL_FAILED_MESSAGE) from exc
+    yield StageEvent("sql_execution", "completed", "تم استخراج البيانات المطلوبة")
 
     yield StageEvent("answer_generation", "started")
     answer_chunks: list[str] = []

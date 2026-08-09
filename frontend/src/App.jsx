@@ -1,22 +1,18 @@
 import { useEffect, useState } from "react";
-import ActivityPanel from "./ActivityPanel";
-import CatalogPanel from "./CatalogPanel";
+import AdminPage from "./AdminPage";
 import ChatPanel from "./ChatPanel";
-import ConceptsPanel from "./ConceptsPanel";
 import { fetchCdcStatus } from "./api";
 
 const PAGES = [
-  { id: "ask", label: "Ask", icon: "💬" },
-  { id: "schema", label: "Schema updates", icon: "🗂" },
-  { id: "concepts", label: "Concepts", icon: "📖" },
-  { id: "activity", label: "Activity", icon: "📋" },
+  { id: "ask", label: "اسأل", icon: "💬" },
+  { id: "admin", label: "الإدارة", icon: "⚙️" },
 ];
 
 export default function App() {
   const [page, setPage] = useState("ask");
   // Tables the automated path documented but would NOT index — those are not
   // queryable until someone acts. Badged because the whole point of automation
-  // is that nobody is watching the tab where the work lands. Tables it indexed
+  // is that nobody is watching the page where the work lands. Tables it indexed
   // on its own are deliberately not counted here: they already work, and
   // badging them would train people to ignore the badge.
   const [waiting, setWaiting] = useState(0);
@@ -37,8 +33,10 @@ export default function App() {
 
   return (
     <div className="shell">
+      {/* The sidebar is first in the DOM and the page is dir="rtl", which is
+          what puts it on the right — no ordering override needed. */}
       <nav className="sidebar">
-        <div className="brand">Text-to-SQL</div>
+        <div className="brand">مساعد الاستعلام</div>
         {PAGES.map(({ id, label, icon }) => (
           <button
             key={id}
@@ -50,34 +48,19 @@ export default function App() {
               {icon}
             </span>
             {label}
-            {id === "schema" && waiting > 0 && <span className="nav-badge">{waiting}</span>}
+            {id === "admin" && waiting > 0 && <span className="nav-badge">{waiting}</span>}
           </button>
         ))}
       </nav>
 
-      {/* Both panels stay mounted so switching pages mid-review doesn't discard
-          the scan results, the transcript, or an in-flight answer. */}
+      {/* Both pages stay mounted so switching mid-review doesn't discard the
+          scan results, the transcript, or an in-flight answer. */}
       <main className="main">
         <div className="pane" hidden={page !== "ask"}>
           <ChatPanel />
         </div>
-        <div className="pane pane-scroll" hidden={page !== "schema"}>
-          <div className="page">
-            <h1>Schema updates</h1>
-            <CatalogPanel onReviewCountChange={setWaiting} />
-          </div>
-        </div>
-        <div className="pane pane-scroll" hidden={page !== "concepts"}>
-          <div className="page">
-            <h1>Concepts</h1>
-            <ConceptsPanel />
-          </div>
-        </div>
-        <div className="pane pane-scroll" hidden={page !== "activity"}>
-          <div className="page">
-            <h1>Activity</h1>
-            <ActivityPanel />
-          </div>
+        <div className="pane pane-scroll" hidden={page !== "admin"}>
+          <AdminPage onReviewCountChange={setWaiting} />
         </div>
       </main>
     </div>

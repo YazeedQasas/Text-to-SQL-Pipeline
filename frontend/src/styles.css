@@ -5,10 +5,27 @@ body,
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  /* Segoe UI first: this is a Windows deployment and it is the only stack font
+     that renders Arabic well at small sizes. Tahoma is the fallback that is
+     always present when it is not. */
+  font-family: "Segoe UI", Tahoma, -apple-system, BlinkMacSystemFont, sans-serif;
   background: #ffffff;
   margin: 0;
   color: #1a1a1a;
+}
+
+/* Shared surface tokens, so a card looks the same wherever it is used. */
+:root {
+  --ground: #f2f4f7;
+  --surface: #ffffff;
+  --line: #e4e7ec;
+  --line-soft: #eff1f4;
+  --ink: #16191d;
+  --ink-muted: #5c6470;
+  --ink-faint: #8b929c;
+  --accent: #2b6cb0;
+  --radius: 12px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 4px 12px rgba(16, 24, 40, 0.05);
 }
 
 /* --- Shell ----------------------------------------------------------------- */
@@ -23,16 +40,18 @@ body {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.2rem;
   padding: 0.75rem;
-  background: #f9f9f9;
-  border-right: 1px solid #e8e8e8;
+  background: #fafbfc;
+  border-inline-end: 1px solid var(--line);
 }
 
 .brand {
-  font-weight: 600;
+  font-weight: 650;
   font-size: 0.95rem;
+  letter-spacing: -0.01em;
   padding: 0.6rem 0.7rem 1.1rem;
+  color: var(--ink);
 }
 
 .nav-item {
@@ -47,18 +66,18 @@ body {
   font: inherit;
   font-size: 0.9rem;
   color: #3a3a3a;
-  text-align: left;
+  text-align: start;
   cursor: pointer;
 }
 
 .nav-item:hover {
-  background: #ededed;
+  background: #eef0f3;
 }
 
 .nav-item-active {
-  background: #e6e6e6;
-  color: #1a1a1a;
-  font-weight: 600;
+  background: #e8f0fe;
+  color: #174ea6;
+  font-weight: 650;
 }
 
 .nav-icon {
@@ -89,17 +108,130 @@ body {
   overflow-y: auto;
 }
 
-.page {
+.subtitle {
+  color: var(--ink-muted);
+  font-size: 0.85rem;
+  line-height: 1.75;
+  margin-top: 0;
+}
+
+.subtitle code {
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  background: #f2f4f7;
+  font-size: 0.95em;
+}
+
+/* --- Admin: three widgets on one screen ------------------------------------ */
+
+/* A tinted ground behind the page is what makes the widgets read as separate
+   panels. On white they were white cards on white, and the only thing marking
+   an edge was a 1px hairline — which is what "not very clear" was. */
+.admin {
   width: 100%;
-  max-width: 780px;
-  margin: 0 auto;
-  padding: 2rem 1.5rem 4rem;
+  min-height: 100%;
+  /* `.pane` is a column flex container, so this is a flex item that would
+     otherwise shrink to one screen and let the widgets overflow it — leaving
+     the tint painted over the first viewport only and the rest of the scroll on
+     bare white. `min-height: 100%` is what disables the automatic minimum size
+     that would normally prevent that, so the shrinking has to be refused here. */
+  flex-shrink: 0;
+  padding: 1.5rem;
+  background: var(--ground);
   box-sizing: border-box;
 }
 
-.subtitle {
-  color: #555;
-  margin-top: -0.5rem;
+/* Two columns. In RTL the first one is the right-hand one, which is where the
+   concepts and the schema updates belong; the activity feed sits beside them. */
+.admin-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.admin-column {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  min-width: 0;
+}
+
+.widget {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+/* Each widget carries a colour on its header rule. Three panels of identical
+   grey are hard to tell apart at a glance once you have scrolled; the stripe is
+   what your eye comes back to. */
+.widget-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.9rem 1.1rem;
+  border-bottom: 1px solid var(--line);
+  border-top: 3px solid var(--widget-accent, var(--accent));
+  background: linear-gradient(180deg, #fbfcfd 0%, #f7f8fa 100%);
+}
+
+.widget-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 8px;
+  background: var(--widget-tint, #e8f0fe);
+  font-size: 0.9rem;
+}
+
+.widget-title {
+  margin: 0;
+  font-size: 0.98rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+/* Each widget scrolls inside itself, so one long list — usually the activity
+   feed — cannot push the others off the bottom of the page. */
+.widget-body {
+  padding: 1.1rem 1.2rem 1.35rem;
+  max-height: 40rem;
+  overflow-y: auto;
+}
+
+.widget-tall .widget-body {
+  max-height: 68rem;
+}
+
+/* A restrained scrollbar. The default Windows one is heavy enough to read as a
+   border between the two columns. */
+.widget-body::-webkit-scrollbar {
+  width: 10px;
+}
+
+.widget-body::-webkit-scrollbar-thumb {
+  background: #dcdfe4;
+  border: 3px solid var(--surface);
+  border-radius: 999px;
+}
+
+.widget-body::-webkit-scrollbar-thumb:hover {
+  background: #c6cad1;
+}
+
+@media (max-width: 980px) {
+  .admin-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 /* --- Chat ------------------------------------------------------------------ */
@@ -157,7 +289,7 @@ body {
 
 .new-chat {
   flex-shrink: 0;
-  margin-left: auto;
+  margin-inline-start: auto;
   padding: 0.35rem 0.8rem;
   border: 1px solid #e0e0e0;
   border-radius: 999px;
@@ -262,13 +394,21 @@ body {
   margin-bottom: 2.25rem;
 }
 
+/* The two sides of an exchange are placed by physical edge, not by writing
+   direction: the page is RTL, so the logical `flex-end`/`start` of Arabic text
+   is the left, which is the opposite of where each side belongs here. */
 .turn-user {
   display: flex;
-  justify-content: flex-end;
   margin-bottom: 1.25rem;
 }
 
+.turn-assistant {
+  max-width: 85%;
+  margin-right: auto; /* the left edge */
+}
+
 .bubble {
+  margin-left: auto; /* the right edge */
   max-width: 75%;
   padding: 0.7rem 1.05rem;
   border-radius: 1.25rem;
@@ -327,33 +467,6 @@ body {
   color: #1a1a1a;
 }
 
-.turn-details {
-  margin-top: 1rem;
-  padding-top: 0.6rem;
-  border-top: 1px solid #f0f0f0;
-}
-
-.turn-details > details {
-  margin: 0.2rem 0;
-  font-size: 0.82rem;
-}
-
-.turn-details summary {
-  padding: 0.15rem 0;
-  color: #6b6b6b;
-  cursor: pointer;
-}
-
-.turn-details summary:hover {
-  color: #1a1a1a;
-}
-
-.turn-details ul {
-  margin: 0.4rem 0;
-  padding-left: 1.2rem;
-  line-height: 1.6;
-}
-
 /* --- Composer -------------------------------------------------------------- */
 
 .composer-area {
@@ -366,7 +479,11 @@ body {
   gap: 0.5rem;
   max-width: 48rem;
   margin: 0 auto;
-  padding: 0.5rem 0.5rem 0.5rem 1rem;
+  /* Logical, so the roomy inset stays on the text side and the tight one on the
+     button side under RTL. The button's inset matches the 0.5rem below it, so
+     the circle sits concentric with the pill's rounded end. */
+  padding-block: 0.5rem;
+  padding-inline: 1rem 0.5rem;
   border: 1px solid #dcdcdc;
   border-radius: 1.6rem;
   background: #fff;
@@ -381,6 +498,11 @@ body {
   flex: 1;
   min-width: 0;
   max-height: 200px;
+  /* The auto-grow in ChatPanel assigns `scrollHeight`, which includes padding,
+     straight to `height`. Under the default content-box that adds the padding a
+     second time and the field stands ~11px taller than its own text — which is
+     what leaves the bottom-aligned button sitting below the line it belongs to. */
+  box-sizing: border-box;
   padding: 0.35rem 0;
   border: none;
   outline: none;
@@ -402,13 +524,16 @@ body {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  box-sizing: border-box;
   width: 2.15rem;
   height: 2.15rem;
+  padding: 0; /* the UA's own button padding would push the glyph off-centre */
   border: none;
   border-radius: 50%;
   background: #1a1a1a;
   color: #fff;
   font-size: 1rem;
+  line-height: 1;
   cursor: pointer;
 }
 
@@ -642,7 +767,7 @@ pre {
 .change-type {
   color: #666;
   font-size: 0.8rem;
-  margin-left: 0.6rem;
+  margin-inline-start: 0.6rem;
 }
 
 .badge {
@@ -670,7 +795,7 @@ pre {
 
 .change-reasons {
   margin: 0.5rem 0;
-  padding-left: 1.1rem;
+  padding-inline-start: 1.1rem;
   color: #7a4f01;
   font-size: 0.86rem;
 }
@@ -751,7 +876,7 @@ pre {
 }
 
 .override {
-  margin-left: auto;
+  margin-inline-start: auto;
   color: #7a4f01;
 }
 
@@ -762,18 +887,49 @@ pre {
   margin-top: 1.5rem;
 }
 
-.catalog-footer .approve {
+/* The primary action of whichever panel it appears in — a scan, a sync, a save.
+   Not scoped to .catalog-footer any more: the same button now sits in the
+   concepts form and the admin widget headers, and it should read the same
+   everywhere it means "this is the one that commits". */
+.approve {
   background: #2b6cb0;
   color: white;
   border: none;
   border-radius: 6px;
-  padding: 0.6rem 1.1rem;
-  font-size: 0.95rem;
+  padding: 0.5rem 1rem;
+  font: inherit;
+  font-size: 0.9rem;
   cursor: pointer;
 }
 
-.catalog-footer .approve:disabled {
+.approve:hover:not(:disabled) {
+  background: #245a94;
+}
+
+.approve:disabled {
   background: #c3ccd6;
+  cursor: not-allowed;
+}
+
+/* Secondary buttons sitting next to it. */
+.catalog-actions button:not(.approve) {
+  padding: 0.5rem 0.9rem;
+  border: 1px solid #d8d8d8;
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  font-size: 0.9rem;
+  color: #444;
+  cursor: pointer;
+}
+
+.catalog-actions button:not(.approve):hover:not(:disabled) {
+  border-color: #b4b4b4;
+  background: #f7f7f7;
+}
+
+.catalog-actions button:disabled {
+  color: #aaa;
   cursor: not-allowed;
 }
 
@@ -790,7 +946,7 @@ pre {
     width: auto;
     gap: 0.35rem;
     padding: 0.5rem 0.75rem;
-    border-right: none;
+    border-inline-end: none;
     border-bottom: 1px solid #e8e8e8;
   }
 
@@ -832,8 +988,14 @@ pre {
   font-size: 0.8rem;
 }
 
+/* Only in a review card does this belong at the far end, away from the radio
+   buttons. In the two editor footers it sits next to the save button, where a
+   cancel belongs. */
+.change-controls .dismiss {
+  margin-inline-start: auto;
+}
+
 .dismiss {
-  margin-left: auto;
   font-size: 0.8rem;
   padding: 0.25rem 0.6rem;
   background: transparent;
@@ -849,7 +1011,7 @@ pre {
 }
 
 .nav-badge {
-  margin-left: auto;
+  margin-inline-start: auto;
   background: #e0a010;
   color: white;
   font-size: 0.7rem;
@@ -862,13 +1024,19 @@ pre {
 
 /* --- Activity -------------------------------------------------------------- */
 
+/* Set into its own tinted strip. It is status, not content, and inline with the
+   prose above it read as another sentence. */
 .activity-status {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 0.45rem;
-  font-size: 0.85rem;
-  color: #555;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: #fbfcfd;
+  font-size: 0.8rem;
+  color: var(--ink-muted);
   margin: 1rem 0;
 }
 
@@ -894,29 +1062,40 @@ pre {
 
 .activity-filters {
   display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 0.4rem;
-  margin-bottom: 1.25rem;
+  gap: 0.35rem;
+  padding-bottom: 0.9rem;
+  margin-bottom: 1rem;
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .activity-filter {
-  font-size: 0.8rem;
+  font: inherit;
+  font-size: 0.78rem;
   padding: 0.3rem 0.7rem;
-  border: 1px solid #e2e2e2;
+  border: 1px solid var(--line);
   background: white;
   border-radius: 999px;
-  color: #555;
+  color: var(--ink-muted);
   cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
 }
 
 .activity-filter:hover {
-  border-color: #c8c8c8;
+  border-color: #c3c9d2;
+  background: #f7f8fa;
 }
 
 .activity-filter-active {
-  background: #1a1a1a;
-  border-color: #1a1a1a;
+  background: var(--ink);
+  border-color: var(--ink);
   color: white;
+}
+
+.activity-filter-active:hover {
+  background: #2b3038;
+  border-color: #2b3038;
 }
 
 .activity-empty {
@@ -930,43 +1109,52 @@ pre {
   margin: 0;
 }
 
+/* The feed was ten identical white rectangles. The rail on the leading edge is
+   what gives it rhythm: routine events get a near-invisible one, and the two
+   that need a person stand out without the row shouting. */
 .activity-item {
-  border: 1px solid #e8e8e8;
-  border-left: 3px solid #d8d8d8;
-  border-radius: 8px;
-  padding: 0.7rem 0.9rem;
-  margin-bottom: 0.6rem;
-  background: white;
+  border: 1px solid var(--line);
+  border-inline-start: 3px solid #dfe3e8;
+  border-radius: 10px;
+  padding: 0.75rem 0.95rem;
+  margin-bottom: 0.55rem;
+  background: var(--surface);
 }
 
 /* Same amber/red vocabulary the review cards use, so a flag means the same
    thing wherever it appears. */
 .activity-warning {
-  border-left-color: #e0a010;
+  border-inline-start-color: #e0a010;
   background: #fffdf5;
 }
 
 .activity-error {
-  border-left-color: #d13c3c;
+  border-inline-start-color: #d13c3c;
   background: #fef7f7;
 }
 
 .activity-head {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
-  font-size: 0.78rem;
-  color: #888;
-  margin-bottom: 0.3rem;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+  margin-bottom: 0.35rem;
 }
 
 .activity-time {
   font-variant-numeric: tabular-nums;
 }
 
+/* A chip rather than bold text: it is a category, and at this size bold alone
+   did not separate it from the timestamp beside it. */
 .activity-source {
+  padding: 0.08rem 0.45rem;
+  border-radius: 999px;
+  background: #f2f4f7;
   font-weight: 600;
-  color: #555;
+  font-size: 0.72rem;
+  color: var(--ink-muted);
 }
 
 .activity-badge {
@@ -1075,11 +1263,21 @@ pre {
 
 .concepts-search {
   width: 100%;
-  padding: 0.5rem 0.7rem;
-  border: 1px solid #e2e2e2;
+  box-sizing: border-box;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--line);
   border-radius: 8px;
-  font-size: 0.9rem;
+  font: inherit;
+  font-size: 0.88rem;
   margin-bottom: 1rem;
+  background: #fbfcfd;
+}
+
+.concepts-search:focus {
+  outline: none;
+  border-color: #a9c4e4;
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(43, 108, 176, 0.12);
 }
 
 .concepts-list {
@@ -1088,14 +1286,50 @@ pre {
   margin: 0;
 }
 
-.concept-card {
-  border: 1px solid #e8e8e8;
-  border-radius: 8px;
-  padding: 0.85rem 1rem;
-  margin-bottom: 0.7rem;
-  background: white;
+/* Sits under the list as its continuation, not as an action on the panel — so
+   it is a full-width quiet button rather than one of the solid ones above. */
+.concepts-more {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 0.25rem;
 }
 
+.concepts-more button {
+  flex: 1;
+  padding: 0.5rem 0.9rem;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  background: #fbfcfd;
+  font: inherit;
+  font-size: 0.88rem;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.concepts-more button:hover {
+  border-style: solid;
+  border-color: #cdd5df;
+  background: #fff;
+  color: var(--ink);
+}
+
+.concept-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 0.7rem;
+  background: var(--surface);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.concept-card:hover {
+  border-color: #cdd5df;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06);
+}
+
+/* The term is the anchor of the card, so it gets the size; the id is
+   bookkeeping and gets pushed to a muted pill on the far side. */
 .concept-head {
   display: flex;
   align-items: baseline;
@@ -1104,42 +1338,87 @@ pre {
 }
 
 .concept-term {
-  font-weight: 600;
-  font-size: 1rem;
+  font-weight: 650;
+  font-size: 1.02rem;
+  color: var(--ink);
 }
 
 .concept-id {
-  font-size: 0.75rem;
-  color: #999;
+  flex-shrink: 0;
+  padding: 0.1rem 0.45rem;
+  border-radius: 5px;
+  background: #f2f4f7;
+  font-size: 0.72rem;
+  color: var(--ink-faint);
+  direction: ltr;
 }
 
 .concept-aliases {
-  font-size: 0.85rem;
-  color: #666;
-  margin-top: 0.2rem;
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+  margin-top: 0.3rem;
 }
 
 .concept-definition {
   font-size: 0.88rem;
-  color: #333;
-  line-height: 1.6;
-  margin: 0.5rem 0;
+  color: #2f353d;
+  line-height: 1.75;
+  margin: 0.6rem 0;
 }
 
+/* The one genuinely technical line on the card. Tinted rather than grey so it
+   reads as machinery and the eye can skip it. */
 .concept-sql {
   display: block;
-  background: #f5f5f5;
-  padding: 0.4rem 0.6rem;
+  background: #f7f9fc;
+  border: 1px solid #e6edf5;
+  padding: 0.45rem 0.65rem;
   border-radius: 6px;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
+  color: #33475b;
   overflow-x: auto;
   direction: ltr;
+  text-align: left;
 }
 
 .concept-tables {
-  font-size: 0.75rem;
-  color: #999;
-  margin-top: 0.4rem;
+  font-size: 0.74rem;
+  color: var(--ink-faint);
+  margin-top: 0.45rem;
+  direction: ltr;
+  text-align: left;
+}
+
+/* Divided off from the card body: it is a control, not more content. */
+.concept-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--line-soft);
+}
+
+/* The edit/create form. Blue rail so an open form is obviously the one thing on
+   the widget currently holding unsaved text. */
+.concept-form {
+  border: 1px solid #cddcee;
+  border-inline-start: 4px solid #2b6cb0;
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 0.9rem;
+  background: #f8fbff;
+}
+
+.concept-form-title {
+  font-weight: 600;
+  font-size: 0.92rem;
+  margin-bottom: 0.4rem;
+}
+
+.concept-form .field input:disabled {
+  background: #f0f0f0;
+  color: #777;
 }
 
 /* A review-queue entry that is already in Qdrant and answering questions —
@@ -1239,7 +1518,7 @@ pre {
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  margin-left: auto;
+  margin-inline-start: auto;
 }
 
 .activity-clear-confirm {

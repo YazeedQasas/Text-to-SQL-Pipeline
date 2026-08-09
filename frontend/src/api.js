@@ -16,7 +16,7 @@ async function postJson(path, body) {
       // a structured object listing which tables it blocked.
       typeof data?.detail === "string"
         ? data.detail
-        : data?.detail?.message || `Request failed with status ${response.status}`,
+        : data?.detail?.message || `فشل الطلب (${response.status})`,
     );
     error.status = response.status;
     error.detail = data?.detail;
@@ -41,7 +41,7 @@ async function getJson(path) {
   const response = await fetch(`${API_BASE_URL}${path}`);
   const data = await response.json().catch(() => null);
   if (!response.ok) {
-    const error = new Error(data?.detail || `Request failed with status ${response.status}`);
+    const error = new Error(data?.detail || `فشل الطلب (${response.status})`);
     error.status = response.status;
     throw error;
   }
@@ -79,7 +79,7 @@ export async function dismissReview(tableName) {
   );
   if (!response.ok) {
     const data = await response.json().catch(() => null);
-    throw new Error(data?.detail || `Request failed with status ${response.status}`);
+    throw new Error(data?.detail || `فشل الطلب (${response.status})`);
   }
   return response.json();
 }
@@ -89,39 +89,45 @@ export function fetchCdcStatus() {
   return getJson("/api/cdc/status");
 }
 
-/** The glossary as data/concepts.json has it, plus Qdrant's point count. */
-export function fetchConcepts() {
-  return getJson("/api/concepts");
+/**
+ * The glossary as Qdrant holds it — what the query pipeline actually reads.
+ *
+ * This is what the admin page lists and edits. The file is a backup written
+ * after the fact, so showing it would risk showing a definition that is not in
+ * force yet.
+ */
+export function fetchLiveConcepts() {
+  return getJson("/api/concepts/live");
 }
 
 /**
- * Reconcile concepts.json against Qdrant.
+ * Create or overwrite one concept in Qdrant, keyed by its id.
  *
- * Resolves rather than throws when the sync is refused — a refusal is a result
- * the user has to read (`ok: false`, `refused_reason`), not a transport error,
- * and it is retried with `force` once they have.
+ * Both the edit form and "new concept" go through here: from Qdrant's side they
+ * are the same upsert, and the id in the body is the only thing that decides
+ * which of the two it turns out to be.
  */
-export function syncConcepts({ force = false } = {}) {
-  return postJson(`/api/concepts/sync?force=${force ? "true" : "false"}`, {});
-}
-
-/** Replace concepts.json wholesale, then reconcile. Same refusal semantics. */
-export async function uploadConcepts(concepts, { force = false } = {}) {
-  const response = await fetch(`${API_BASE_URL}/api/concepts`, {
+export async function saveConcept(concept) {
+  const response = await fetch(`${API_BASE_URL}/api/concepts/entry`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ concepts, force }),
+    body: JSON.stringify(concept),
   });
   const data = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(
       typeof data?.detail === "string"
         ? data.detail
-        : `Request failed with status ${response.status}`,
+        : data?.detail?.[0]?.msg || `فشل الطلب (${response.status})`,
     );
   }
   return data;
 }
+
+/* The file-side endpoints — GET /api/concepts, POST /api/concepts/sync and the
+   wholesale PUT — are still served by the backend and still used by the Qdrant
+   watcher, but nothing in the UI calls them any more: the admin page writes to
+   Qdrant directly and the file follows. */
 
 /** The most recent activity events, newest first. */
 export function fetchActivity(limit = 100) {
@@ -138,7 +144,7 @@ export async function clearActivity() {
   const response = await fetch(`${API_BASE_URL}/api/activity`, { method: "DELETE" });
   if (!response.ok) {
     const data = await response.json().catch(() => null);
-    throw new Error(data?.detail || `Request failed with status ${response.status}`);
+    throw new Error(data?.detail || `فشل الطلب (${response.status})`);
   }
   return response.json();
 }
@@ -199,7 +205,7 @@ export async function submitQueryStream(question, history = [], handlers = {}) {
 
   if (!response.ok || !response.body) {
     const data = await response.json().catch(() => null);
-    throw new Error(data?.detail || `Request failed with status ${response.status}`);
+    throw new Error(data?.detail || `فشل الطلب (${response.status})`);
   }
 
   const reader = response.body.getReader();
@@ -262,7 +268,7 @@ export async function submitQueryStream(question, history = [], handlers = {}) {
     // An abort lands here only if it raced the last read; report it as the
     // cancellation it is rather than as a dropped connection.
     if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
-    throw new Error("The connection closed before a result arrived.");
+    throw new Error("انقطع الاتصال قبل وصول الإجابة.");
   }
   return result;
 }

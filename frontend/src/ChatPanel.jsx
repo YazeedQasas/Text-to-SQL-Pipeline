@@ -16,6 +16,22 @@ const FOLLOW_THRESHOLD = 96;
 
 const MAX_COMPOSER_HEIGHT = 200;
 
+/**
+ * "N remembered questions", with Arabic number agreement.
+ *
+ * Arabic does not split on one-vs-many the way English does: zero takes a
+ * negation, two has its own dual form, 3–10 take a plural, and 11 and up go
+ * back to a singular accusative. A ternary on `=== 1` produces "0 أسئلة", which
+ * is wrong in a way a reader notices immediately.
+ */
+function rememberedLabel(count) {
+  if (count === 0) return "لا أسئلة محفوظة";
+  if (count === 1) return "سؤال واحد محفوظ";
+  if (count === 2) return "سؤالان محفوظان";
+  if (count <= 10) return `${count} أسئلة محفوظة`;
+  return `${count} سؤالًا محفوظًا`;
+}
+
 let nextTurnId = 1;
 
 function newTurn(question) {
@@ -56,6 +72,9 @@ function toHistory(turns) {
  * When the window fills the conversation stops rather than silently dropping
  * its oldest turns, so what the model can see is never less than what the user
  * can see.
+ *
+ * The SQL and the tables each turn used are still carried in `result` and still
+ * replayed to the model as history — they are simply never drawn. See ChatTurn.
  */
 export default function ChatPanel() {
   const [turns, setTurns] = useState([]);
@@ -231,8 +250,8 @@ export default function ChatPanel() {
           className="meter"
           title={
             usage
-              ? `${usage.used_tokens} of ${usage.limit_tokens} tokens used by the prompt`
-              : "Measured once the first question is sent"
+              ? `استُهلك ${Math.round(fraction * 100)}٪ من ذاكرة المحادثة`
+              : "يُقاس بعد إرسال أول سؤال"
           }
         >
           <div className="meter-track">
@@ -243,10 +262,10 @@ export default function ChatPanel() {
           </div>
           <span className="meter-label">
             {usage
-              ? `${Math.round(fraction * 100)}% context · ${usage.history_turns} ${
-                  usage.history_turns === 1 ? "turn" : "turns"
-                } remembered`
-              : "Context — not measured yet"}
+              ? `${Math.round(fraction * 100)}٪ من الذاكرة · ${rememberedLabel(
+                  usage.history_turns,
+                )}`
+              : "الذاكرة — لم تُقَس بعد"}
           </span>
         </div>
         <button
@@ -255,7 +274,7 @@ export default function ChatPanel() {
           onClick={startNewChat}
           disabled={turns.length === 0}
         >
-          New chat
+          محادثة جديدة
         </button>
       </header>
 
@@ -263,11 +282,11 @@ export default function ChatPanel() {
         <div className="chat-column">
           {turns.length === 0 ? (
             <div className="chat-empty">
-              <h2>Ask the case database</h2>
+              <h2>اسأل عن قاعدة بيانات القضايا</h2>
               <p>
-                Questions are answered in Arabic from the indexed schema. Follow-ups work
-                — the model sees this conversation — until the context window fills, at
-                which point you start a new chat.
+                اطرح سؤالك بالعربية وستحصل على إجابة مبنية على بيانات المحاكم. يمكنك
+                المتابعة بأسئلة إضافية — النظام يتذكّر هذه المحادثة — إلى أن تمتلئ
+                الذاكرة، وعندها تبدأ محادثة جديدة.
               </p>
               <div className="suggestions">
                 {SUGGESTIONS.map((suggestion) => (
@@ -293,11 +312,11 @@ export default function ChatPanel() {
         {full && (
           <div className="context-full">
             <span>
-              This conversation has filled the model's context window. Earlier turns are
-              not being dropped — start a new chat to continue.
+              امتلأت ذاكرة هذه المحادثة. لم يُحذف أي سؤال سابق — ابدأ محادثة جديدة
+              للمتابعة.
             </span>
             <button type="button" onClick={startNewChat}>
-              New chat
+              محادثة جديدة
             </button>
           </div>
         )}
@@ -307,10 +326,17 @@ export default function ChatPanel() {
             ref={composerRef}
             rows={1}
             value={draft}
-            dir="auto"
+            // `auto` reads the direction off the value, and an empty box has no
+            // strong character to read — so browsers fall back to LTR and the
+            // Arabic placeholder starts at the left with its ellipsis trailing
+            // off to the right. Pin the empty field to RTL; once there is
+            // something typed, `auto` can do its job again.
+            dir={draft ? "auto" : "rtl"}
             disabled={full}
             placeholder={
-              full ? "Start a new chat to continue" : "Ask about cases, judges, hearings, rulings…"
+              full
+                ? "ابدأ محادثة جديدة للمتابعة"
+                : "اسأل عن القضايا أو القضاة أو الجلسات أو الأحكام…"
             }
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={handleKeyDown}
@@ -320,21 +346,21 @@ export default function ChatPanel() {
               type="button"
               className="stop"
               onClick={stopGenerating}
-              aria-label="Stop generating"
-              title="Stop generating (Esc)"
+              aria-label="إيقاف"
+              title="إيقاف (Esc)"
             >
               <span className="stop-icon" />
             </button>
           ) : (
-            <button type="submit" disabled={full || !draft.trim()} aria-label="Send">
+            <button type="submit" disabled={full || !draft.trim()} aria-label="إرسال">
               ↑
             </button>
           )}
         </form>
         <p className="composer-hint">
           {busy
-            ? "Esc or the stop button to cancel"
-            : "Enter to send · Shift+Enter for a new line · the model sees this conversation, not the result tables"}
+            ? "اضغط Esc أو زر الإيقاف للإلغاء"
+            : "Enter للإرسال · Shift+Enter لسطر جديد · النظام يتذكّر هذه المحادثة"}
         </p>
       </div>
     </div>

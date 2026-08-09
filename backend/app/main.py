@@ -37,8 +37,8 @@ async def lifespan(app: FastAPI):
         activity.record(
             activity.SOURCE_CDC,
             "worker_start_failed",
-            f"The CDC worker did not start: {exc}. New tables will not be documented "
-            f"automatically until the backend is restarted.",
+            f"لم يبدأ مراقب التغييرات: {exc}. لن يتم توثيق الجداول الجديدة تلقائيًا "
+            f"حتى إعادة تشغيل النظام.",
             level=activity.LEVEL_ERROR,
         )
 
@@ -49,7 +49,7 @@ async def lifespan(app: FastAPI):
         activity.record(
             activity.SOURCE_QDRANT_WATCH,
             "watcher_start_failed",
-            f"The Qdrant deletion watcher did not start: {exc}.",
+            f"لم يبدأ مراقب الحذف في الفهرس: {exc}.",
             level=activity.LEVEL_ERROR,
         )
 

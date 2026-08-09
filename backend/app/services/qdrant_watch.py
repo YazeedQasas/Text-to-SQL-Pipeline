@@ -236,9 +236,9 @@ class QdrantWatcher:
             activity.SOURCE_QDRANT_WATCH,
             "watcher_unavailable",
             (
-                f"Not watching Qdrant for outside deletions: {reason}. "
-                f"Deletions made directly in Qdrant will not be mirrored to concepts.json "
-                f"until a sync is run by hand."
+                f"لا تتم مراقبة الحذف الخارجي من الفهرس: {reason}. "
+                f"أي حذف يجري على الفهرس مباشرة لن ينعكس على النسخة الاحتياطية "
+                f"حتى تُشغَّل مزامنة يدويًا."
             ),
             level=activity.LEVEL_WARNING,
             container=QDRANT_CONTAINER,
@@ -264,11 +264,11 @@ class QdrantWatcher:
             activity.SOURCE_QDRANT_WATCH,
             signal,
             (
-                "The concepts collection was deleted in Qdrant"
+                "حُذفت مجموعة المفاهيم من الفهرس"
                 if signal == DELETE_COLLECTION
-                else "Points were deleted from the concepts collection in Qdrant"
+                else "حُذفت مفاهيم من الفهرس"
             )
-            + " — reconciling concepts.json.",
+            + " — تجري الآن مطابقتها مع النسخة الاحتياطية.",
             level=activity.LEVEL_INFO,
             collection=QDRANT_CONCEPTS_COLLECTION,
         )
@@ -280,7 +280,7 @@ class QdrantWatcher:
             activity.record(
                 activity.SOURCE_QDRANT_WATCH,
                 "reconcile_failed",
-                f"Reconcile after a Qdrant deletion failed: {exc}",
+                f"فشلت المطابقة بعد الحذف من الفهرس: {exc}",
                 level=activity.LEVEL_ERROR,
             )
 
@@ -320,16 +320,15 @@ class QdrantWatcher:
             listed = ", ".join(missing)
             plural = len(missing) > 1
             message = (
-                f"Schema documents were deleted in Qdrant. The chatbot can no longer find "
-                f"{'these tables' if plural else 'this table'}: {listed}. "
-                f"Questions about {'them' if plural else 'it'} will be answered from the wrong "
-                f"tables or not at all. Run 'Check for schema updates' to "
-                f"{'document them' if plural else 'document it'} again."
+                f"حُذفت أوصاف جداول من الفهرس. لم يعد النظام قادرًا على العثور على "
+                f"{'هذه الجداول' if plural else 'هذا الجدول'}: {listed}. "
+                f"الأسئلة عنها ستُجاب من جداول خاطئة أو لن تُجاب إطلاقًا. "
+                f"اضغط 'ابحث' في تعديلات قاعدة البيانات لإعادة توثيقها."
             )
         else:
             message = (
-                "The schema_docs collection was deleted in Qdrant. The chatbot cannot find any "
-                "table until it is rebuilt — run 'Check for schema updates'."
+                "حُذفت أوصاف الجداول من الفهرس بالكامل. لن يتمكّن النظام من العثور على أي "
+                "جدول حتى يُعاد بناؤها — اضغط 'ابحث' في تعديلات قاعدة البيانات."
             )
 
         activity.record(

@@ -62,14 +62,14 @@ export default function TableDocEditor({ tableName, onSaved, onClose }) {
     }
   }
 
-  if (loading) return <div className="doc-editor doc-editor-loading">Loading…</div>;
+  if (loading) return <div className="doc-editor doc-editor-loading">جارٍ التحميل…</div>;
 
   if (error && !doc) {
     return (
       <div className="doc-editor">
         <div className="error">{error}</div>
         <button type="button" className="dismiss" onClick={onClose}>
-          Close
+          إغلاق
         </button>
       </div>
     );
@@ -82,38 +82,36 @@ export default function TableDocEditor({ tableName, onSaved, onClose }) {
   return (
     <div className="doc-editor">
       <p className="catalog-hint">
-        This is what is indexed for <strong>{tableName}</strong> right now. Whatever you save
-        replaces it — the descriptions are what questions get matched against, so this is what
-        decides whether the chatbot can find this table.
+        هذا ما هو مفهرس حاليًا للجدول <strong dir="ltr">{tableName}</strong>. ما تحفظه
+        هنا يحلّ محلّه — والأوصاف هي ما تتم مطابقة الأسئلة معه، أي أنها ما يقرّر إن كان
+        النظام قادرًا على العثور على هذا الجدول.
       </p>
 
       <label className="field">
-        <span>Table description</span>
+        <span>وصف الجدول</span>
         <textarea
           rows={4}
           value={doc.description}
           onChange={(e) => setDescription(e.target.value)}
-          dir="rtl"
-          placeholder="Describe what this table holds and how it relates to the others."
+          placeholder="صف ما يحتويه هذا الجدول وعلاقته ببقية الجداول."
         />
       </label>
 
       <div className="doc-editor-columns">
         <div className="doc-editor-columns-head">
-          Column descriptions ({doc.columns.length})
-          {emptyColumns > 0 && ` — ${emptyColumns} empty`}
+          وصف الأعمدة ({doc.columns.length})
+          {emptyColumns > 0 && ` — ${emptyColumns} فارغ`}
         </div>
         {doc.columns.map((column) => (
           <label key={column.name} className="field field-inline">
-            <span>
+            <span dir="ltr">
               {column.name} <em>{column.type}</em>
             </span>
             <input
               type="text"
               value={column.description}
               onChange={(e) => setColumnDescription(column.name, e.target.value)}
-              dir="rtl"
-              placeholder="What does this column hold?"
+              placeholder="ماذا يحتوي هذا العمود؟"
             />
           </label>
         ))}
@@ -128,17 +126,17 @@ export default function TableDocEditor({ tableName, onSaved, onClose }) {
           onClick={handleSave}
           disabled={saving || !doc.description.trim()}
         >
-          {saving ? "Saving…" : "Overwrite in Qdrant"}
+          {saving ? "جارٍ الحفظ…" : "احفظ الوصف"}
         </button>
         <button type="button" className="dismiss" onClick={onClose}>
-          Close
+          إغلاق
         </button>
         {!doc.description.trim() && (
           <span className="catalog-hint">
-            A table with no description can never be found by a question.
+            الجدول بلا وصف لا يمكن العثور عليه من خلال أي سؤال.
           </span>
         )}
-        {saved && <span className="doc-editor-saved">Saved — re-embedded and overwritten.</span>}
+        {saved && <span className="doc-editor-saved">تم الحفظ وتحديث الفهرس.</span>}
       </div>
     </div>
   );

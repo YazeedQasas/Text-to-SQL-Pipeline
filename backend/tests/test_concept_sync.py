@@ -257,7 +257,11 @@ def test_an_empty_qdrant_does_not_empty_the_file():
     assert len(plan.removed_from_file) == 19
     refusal = check_delete_rail(plan, file_total=19, qdrant_total=0)
     assert refusal != ""
-    assert "concepts.json" in refusal
+    # The refusal is read in the activity feed by someone deciding whether to
+    # force it, so it has to say which side was about to be emptied and by how
+    # much. "ستزيل" is the file-side verb; see the index-side test below.
+    assert "ستزيل" in refusal
+    assert "19" in refusal
 
 
 def test_an_empty_file_does_not_empty_qdrant():
@@ -269,7 +273,10 @@ def test_an_empty_file_does_not_empty_qdrant():
     assert len(plan.delete_from_qdrant) == 19
     refusal = check_delete_rail(plan, file_total=0, qdrant_total=19)
     assert refusal != ""
-    assert "Qdrant" in refusal
+    # The index-side verb, distinct from the file-side one above — the two
+    # refusals mean opposite things and must not read the same.
+    assert "ستحذف" in refusal
+    assert "19" in refusal
 
 
 def test_an_ordinary_deletion_is_not_refused():
