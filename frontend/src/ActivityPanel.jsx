@@ -7,21 +7,24 @@ import TableDocEditor from "./TableDocEditor";
  *
  * Two sources feed this: a snapshot on mount, then a live SSE stream. The
  * snapshot matters because the interesting events happen when nobody is
- * watching — the whole reason this tab exists is that CDC and the Qdrant
+ * watching — the whole reason this widget exists is that CDC and the Qdrant
  * watcher removed the person who used to see the result of clicking a button.
  */
 
+// Distinct per source, deliberately: there is a filter chip per source, and two
+// sources sharing a label means rows tagged "الفهرس" that the الفهرس filter
+// does not return.
 const SOURCE_LABELS = {
-  cdc: "Schema",
-  concepts: "Concepts",
-  qdrant_watch: "Qdrant",
-  catalog: "Catalog",
+  cdc: "قاعدة البيانات",
+  concepts: "المفاهيم",
+  qdrant_watch: "مراقبة الفهرس",
+  catalog: "الفهرس",
 };
 
 const LEVEL_LABELS = {
   info: "",
-  warning: "Needs attention",
-  error: "Failed",
+  warning: "يحتاج انتباهًا",
+  error: "فشل",
 };
 
 function formatTime(ts) {
@@ -29,8 +32,8 @@ function formatTime(ts) {
   const today = new Date();
   const sameDay = date.toDateString() === today.toDateString();
   return sameDay
-    ? date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-    : date.toLocaleString([], {
+    ? date.toLocaleTimeString("ar", { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    : date.toLocaleString("ar", {
         month: "short",
         day: "numeric",
         hour: "2-digit",
@@ -49,36 +52,36 @@ function detailLines(event) {
   const lines = [];
   const d = event.details || {};
 
-  if (d.description) lines.push({ label: "Description written", value: d.description });
+  if (d.description) lines.push({ label: "الوصف المكتوب", value: d.description });
   if (Array.isArray(d.reasons) && d.reasons.length > 0) {
-    lines.push({ label: "Reviewer said", value: d.reasons.join(" · ") });
+    lines.push({ label: "ملاحظات المراجع", value: d.reasons.join(" · ") });
   }
   if (d.suggested_description) {
-    lines.push({ label: "Draft description", value: d.suggested_description });
+    lines.push({ label: "وصف مقترح", value: d.suggested_description });
   }
   if (Array.isArray(d.columns) && d.columns.length > 0) {
     // One row per column rather than a joined string. This is the per-column
     // text the model wrote and what retrieval matches questions against, so it
     // has to be scannable — run together into a paragraph it is unreadable, and
     // unreadable means nobody checks it.
-    lines.push({ label: "Columns described", items: d.columns });
+    lines.push({ label: "وصف الأعمدة", items: d.columns });
   }
-  if (d.summary) lines.push({ label: "Change", value: d.summary });
+  if (d.summary) lines.push({ label: "التغيير", value: d.summary });
   if (typeof d.row_count === "number" && d.row_count >= 0) {
-    lines.push({ label: "Rows in table", value: String(d.row_count) });
+    lines.push({ label: "عدد الصفوف في الجدول", value: String(d.row_count) });
   }
 
   for (const [key, label] of [
-    ["upserted", "Sent to Qdrant"],
-    ["deleted_from_qdrant", "Deleted from Qdrant"],
-    ["added_to_file", "Added to concepts.json"],
-    ["updated_in_file", "Updated in concepts.json"],
-    ["removed_from_file", "Removed from concepts.json"],
-    ["would_delete_from_qdrant", "Would have deleted from Qdrant"],
-    ["would_remove_from_file", "Would have removed from concepts.json"],
+    ["upserted", "أُضيف إلى الفهرس"],
+    ["deleted_from_qdrant", "حُذف من الفهرس"],
+    ["added_to_file", "أُضيف إلى النسخة الاحتياطية"],
+    ["updated_in_file", "حُدّث في النسخة الاحتياطية"],
+    ["removed_from_file", "أُزيل من النسخة الاحتياطية"],
+    ["would_delete_from_qdrant", "كان سيُحذف من الفهرس"],
+    ["would_remove_from_file", "كان سيُزال من النسخة الاحتياطية"],
   ]) {
     if (Array.isArray(d[key]) && d[key].length > 0) {
-      lines.push({ label, value: d[key].join(", ") });
+      lines.push({ label, value: d[key].join("، ") });
     }
   }
 
@@ -196,42 +199,39 @@ export default function ActivityPanel() {
   return (
     <div className="activity">
       <p className="subtitle">
-        Everything the system did on its own — tables documented from a schema change, concepts
-        synced with Qdrant. Anything it wasn&apos;t sure about is flagged here rather than indexed.
-        Use <strong>Edit descriptions</strong> on any table to rewrite what it wrote.
+        كل ما قام به النظام من تلقاء نفسه — توثيق جدول بعد تغيّر في قاعدة البيانات،
+        أو تحديث المفاهيم القانونية. وكل ما لم يكن واثقًا منه يظهر هنا موسومًا بدل
+        أن يُفهرس. استخدم <strong>تعديل الأوصاف</strong> لإعادة كتابة ما كتبه.
       </p>
 
       <div className="activity-status">
         <span className={`activity-dot${connected ? " activity-dot-live" : ""}`} />
-        <span>{connected ? "Live" : "Reconnecting…"}</span>
+        <span>{connected ? "متصل" : "جارٍ إعادة الاتصال…"}</span>
         {cdc && (
           <>
             <span className="activity-status-sep">·</span>
             <span>
-              Change capture {cdc.enabled && cdc.running ? "running" : "off"}
-              {cdc.events_received > 0 && ` · ${cdc.events_received} events`}
+              رصد التغييرات {cdc.enabled && cdc.running ? "يعمل" : "متوقف"}
+              {cdc.events_received > 0 && ` · ${cdc.events_received} حدثًا`}
             </span>
             {cdc.pending_tables.length > 0 && (
               <>
                 <span className="activity-status-sep">·</span>
-                <span>Waiting to document: {cdc.pending_tables.join(", ")}</span>
+                <span dir="ltr">بانتظار التوثيق: {cdc.pending_tables.join("، ")}</span>
               </>
             )}
             {cdc.awaiting_review > 0 && (
               <>
                 <span className="activity-status-sep">·</span>
                 <span className="activity-status-warn">
-                  {cdc.awaiting_review} table{cdc.awaiting_review === 1 ? "" : "s"} not indexed yet —
-                  see Schema updates
+                  {cdc.awaiting_review} جدولًا لم يُفهرس بعد — انظر تعديلات قاعدة البيانات
                 </span>
               </>
             )}
             {cdc.auto_documented > 0 && (
               <>
                 <span className="activity-status-sep">·</span>
-                <span>
-                  {cdc.auto_documented} documented automatically, unread
-                </span>
+                <span>{cdc.auto_documented} وُثّق تلقائيًا ولم يُقرأ بعد</span>
               </>
             )}
           </>
@@ -240,11 +240,11 @@ export default function ActivityPanel() {
 
       <div className="activity-filters">
         {[
-          ["all", `All (${events.length})`],
-          ["warnings", `Needs attention (${warningCount})`],
-          ["cdc", "Schema"],
-          ["concepts", "Concepts"],
-          ["qdrant_watch", "Qdrant"],
+          ["all", `الكل (${events.length})`],
+          ["warnings", `يحتاج انتباهًا (${warningCount})`],
+          ["cdc", "قاعدة البيانات"],
+          ["concepts", "المفاهيم"],
+          ["qdrant_watch", "مراقبة الفهرس"],
         ].map(([id, label]) => (
           <button
             key={id}
@@ -260,14 +260,14 @@ export default function ActivityPanel() {
           <div className="activity-clear">
             {confirmingClear ? (
               <>
-                <span className="catalog-hint">Clear the whole log?</span>
+                <span className="catalog-hint">حذف السجل بالكامل؟</span>
                 <button
                   type="button"
                   className="activity-filter activity-clear-confirm"
                   onClick={handleClear}
                   disabled={clearing}
                 >
-                  {clearing ? "Clearing…" : "Yes, clear it"}
+                  {clearing ? "جارٍ الحذف…" : "نعم، احذفه"}
                 </button>
                 <button
                   type="button"
@@ -275,7 +275,7 @@ export default function ActivityPanel() {
                   onClick={() => setConfirmingClear(false)}
                   disabled={clearing}
                 >
-                  Cancel
+                  إلغاء
                 </button>
               </>
             ) : (
@@ -284,7 +284,7 @@ export default function ActivityPanel() {
                 className="activity-filter"
                 onClick={() => setConfirmingClear(true)}
               >
-                Clear log
+                حذف السجل
               </button>
             )}
           </div>
@@ -296,8 +296,8 @@ export default function ActivityPanel() {
       {visible.length === 0 && !error && (
         <p className="activity-empty">
           {events.length === 0
-            ? "Nothing yet. Create a table in MySQL or edit data/concepts.json and it will show up here."
-            : "Nothing matching this filter."}
+            ? "لا شيء بعد. أنشئ جدولًا في قاعدة البيانات أو عدّل مفهومًا وسيظهر هنا."
+            : "لا شيء يطابق هذا التصفية."}
         </p>
       )}
 
@@ -319,7 +319,9 @@ export default function ActivityPanel() {
                   </span>
                 )}
               </div>
-              <div className="activity-message">{event.message}</div>
+              <div className="activity-message" dir="auto">
+                {event.message}
+              </div>
               {(details.length > 0 || tableName) && (
                 <>
                   <div className="activity-actions">
@@ -329,7 +331,7 @@ export default function ActivityPanel() {
                         className="activity-toggle"
                         onClick={() => toggle(event.id)}
                       >
-                        {isOpen ? "Hide details" : "Details"}
+                        {isOpen ? "إخفاء التفاصيل" : "التفاصيل"}
                       </button>
                     )}
                     {tableName && (
@@ -342,7 +344,7 @@ export default function ActivityPanel() {
                         className="activity-toggle"
                         onClick={() => setEditing(editing === event.id ? null : event.id)}
                       >
-                        {editing === event.id ? "Cancel edit" : "Edit descriptions"}
+                        {editing === event.id ? "إلغاء التعديل" : "تعديل الأوصاف"}
                       </button>
                     )}
                   </div>
@@ -356,20 +358,20 @@ export default function ActivityPanel() {
                               <ul className="activity-columns">
                                 {items.map((column) => (
                                   <li key={column.name}>
-                                    <code>{column.name}</code>
+                                    <code dir="ltr">{column.name}</code>
                                     <span
                                       className={
                                         column.description ? "" : "activity-column-empty"
                                       }
-                                      dir={column.description ? "rtl" : "ltr"}
+                                      dir="auto"
                                     >
-                                      {column.description || "no description"}
+                                      {column.description || "بلا وصف"}
                                     </span>
                                   </li>
                                 ))}
                               </ul>
                             ) : (
-                              value
+                              <span dir="auto">{value}</span>
                             )}
                           </dd>
                         </div>

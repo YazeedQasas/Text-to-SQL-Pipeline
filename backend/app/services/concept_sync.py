@@ -298,16 +298,15 @@ def check_delete_rail(plan: SyncPlan, file_total: int, qdrant_total: int) -> str
     """The reason to refuse this plan, or "" to proceed."""
     if exceeds_delete_rail(len(plan.delete_from_qdrant), qdrant_total):
         return (
-            f"Refused: this sync would delete {len(plan.delete_from_qdrant)} of "
-            f"{qdrant_total} concepts from Qdrant. Check that concepts.json is the "
-            f"version you meant, then force the sync to proceed."
+            f"تم رفض العملية: كانت ستحذف {len(plan.delete_from_qdrant)} مفهومًا من "
+            f"أصل {qdrant_total}. تأكّد من أن النسخة الاحتياطية هي التي تقصدها، ثم "
+            f"أعد التنفيذ مع التأكيد."
         )
     if exceeds_delete_rail(len(plan.removed_from_file), file_total):
         return (
-            f"Refused: this sync would remove {len(plan.removed_from_file)} of "
-            f"{file_total} concepts from concepts.json. That usually means Qdrant "
-            f"came up empty rather than that anything was really deleted — check "
-            f"the collection, then force the sync to proceed."
+            f"تم رفض العملية: كانت ستزيل {len(plan.removed_from_file)} مفهومًا من "
+            f"أصل {file_total} من النسخة الاحتياطية. عادةً ما يعني ذلك أن الفهرس جاء "
+            f"فارغًا لا أن شيئًا حُذف فعلًا — تحقّق منه، ثم أعد التنفيذ مع التأكيد."
         )
     return ""
 
@@ -331,7 +330,7 @@ async def _sync_unlocked(trigger: str, force: bool) -> SyncResult:
     try:
         file_concepts = load_concepts_file(file_path)
     except Exception as exc:  # noqa: BLE001 — a bad file is a user error, not a crash
-        message = f"Could not read {file_path.name}: {exc}"
+        message = f"تعذّرت قراءة النسخة الاحتياطية للمفاهيم: {exc}"
         activity.record(
             activity.SOURCE_CONCEPTS,
             "sync_failed",
@@ -344,7 +343,7 @@ async def _sync_unlocked(trigger: str, force: bool) -> SyncResult:
     try:
         qdrant_concepts = await concept_store.fetch_concepts()
     except Exception as exc:  # noqa: BLE001
-        message = f"Could not read the concepts collection from Qdrant: {exc}"
+        message = f"تعذّرت قراءة المفاهيم من الفهرس: {exc}"
         activity.record(
             activity.SOURCE_CONCEPTS,
             "sync_failed",
@@ -395,7 +394,7 @@ async def _sync_unlocked(trigger: str, force: bool) -> SyncResult:
     try:
         await _apply(plan, file_path)
     except Exception as exc:  # noqa: BLE001
-        message = f"Sync failed while writing: {exc}"
+        message = f"فشلت المزامنة أثناء الحفظ: {exc}"
         logger.exception("Concept sync failed")
         activity.record(
             activity.SOURCE_CONCEPTS,
@@ -410,6 +409,71 @@ async def _sync_unlocked(trigger: str, force: bool) -> SyncResult:
 
     _record_success(result, forced=force)
     return result
+
+
+async def save_concept(concept: ConceptDoc) -> None:
+    """Write one concept straight into Qdrant, and mirror it into the file.
+
+    This is the admin page's edit/create path, and it inverts the direction the
+    rest of this module works in: Qdrant is what answers questions, so it is
+    written FIRST and unconditionally, and `concepts.json` is updated after as a
+    backup of what was written. Nothing about this goes through `plan_sync` —
+    there is no ambiguity to resolve when a person has just typed the text.
+
+    The snapshot is refreshed too, and that is not optional. Without it the next
+    three-way sync would see a concept that changed on both sides since the last
+    agreement and report it as a conflict, or — for a brand-new concept — as
+    something added to Qdrant that needs writing back to a file it is already in.
+
+    Takes the same lock as `sync`, so an edit landing mid-reconcile queues behind
+    it instead of writing into a plan that was made before the edit existed.
+    """
+    async with _sync_lock:
+        await concept_store.ensure_collection()
+        vectors = await embed_texts([build_concept_doc_text(concept)])
+        _assert_embedding_dim(vectors)
+        await concept_store.upsert_concepts([concept], vectors)
+
+        file_path = Path(CONCEPTS_FILE)
+        try:
+            existing = load_concepts_file(file_path)
+        except Exception as exc:  # noqa: BLE001
+            # A backup file that cannot be parsed must not stop a write that has
+            # already succeeded where it counts. Say so and move on.
+            logger.warning("Could not read %s while saving a concept: %s", file_path.name, exc)
+            existing = []
+
+        replaced = False
+        contents: list[ConceptDoc] = []
+        for entry in existing:
+            if entry.id == concept.id:
+                contents.append(concept)
+                replaced = True
+            else:
+                contents.append(entry)
+        if not replaced:
+            contents.append(concept)
+
+        try:
+            save_concepts_file(file_path, contents)
+            save_snapshot(contents)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not update the concepts backup file: %s", exc)
+
+        await _refresh_query_cache()
+
+    activity.record(
+        activity.SOURCE_CONCEPTS,
+        "concept_saved",
+        (
+            f"تم تحديث المفهوم '{concept.term or concept.id}'."
+            if replaced
+            else f"تمت إضافة المفهوم '{concept.term or concept.id}'."
+        ),
+        level=activity.LEVEL_INFO,
+        trigger="admin",
+        concept_id=concept.id,
+    )
 
 
 async def _apply(plan: SyncPlan, file_path: Path) -> None:

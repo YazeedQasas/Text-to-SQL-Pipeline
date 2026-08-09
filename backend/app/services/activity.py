@@ -216,7 +216,7 @@ def clear() -> int:
     record(
         SOURCE_CATALOG,
         "log_cleared",
-        f"Activity log cleared — {removed} event{'' if removed == 1 else 's'} removed.",
+        f"تم مسح سجل النشاط — أُزيل {removed} حدثًا.",
         removed=removed,
     )
     return removed

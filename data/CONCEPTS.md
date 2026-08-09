@@ -4,6 +4,17 @@ The concepts themselves live in `concepts.json` next to this file. JSON has no
 comments, so everything that used to be prose at the top of the old
 `ingestion/concepts.py` lives here instead.
 
+## Where to edit them
+
+Use the **المفاهيم القانونية** widget on the admin page. It lists the
+`legal_concepts` Qdrant collection — what the query pipeline actually reads —
+and saving writes there directly, then mirrors the result into `concepts.json`.
+
+`concepts.json` is a **backup** of what is in force, not the source of truth.
+Editing it by hand still works, because the three-way sync described below still
+runs, but the change does not take effect until that sync does. Editing through
+the admin page takes effect immediately.
+
 ## Why this file exists
 
 A judge asks in the vocabulary of the Palestinian court system. That vocabulary

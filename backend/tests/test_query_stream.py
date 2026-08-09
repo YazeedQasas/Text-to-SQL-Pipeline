@@ -161,7 +161,7 @@ def test_stream_reports_failure_in_band(stub_pipeline):
 
     error = next(e for e in events if e["type"] == "error")
     assert error["status_code"] == 422
-    assert "No relevant tables" in error["detail"]
+    assert error["detail"] == pipeline.NO_TABLES_MESSAGE
     # The stage that failed announced its start but never completed.
     assert {
         "type": "stage",
@@ -290,7 +290,7 @@ def test_non_streaming_endpoint_maps_pipeline_error_to_http_status(stub_pipeline
     response = client.post("/api/query", json={"question": "how many cases?"})
 
     assert response.status_code == 422
-    assert "No relevant tables" in response.json()["detail"]
+    assert response.json()["detail"] == pipeline.NO_TABLES_MESSAGE
 
 
 # --- Domain concepts ---------------------------------------------------------
@@ -315,7 +315,7 @@ def test_no_matched_concept_says_so_and_leaves_the_prompt_untouched(stub_pipelin
         e for e in events
         if e["type"] == "stage" and e["stage"] == "concepts" and e["status"] == "completed"
     )
-    assert stage["detail"] == "no domain terms matched"
+    assert stage["detail"] == "لم تُطابق أي مصطلحات قانونية"
     assert stage.get("content") is None
     assert stub_pipeline["sql_glossary"] == ""
     assert stub_pipeline["boosted_with"] == []
@@ -336,8 +336,9 @@ def test_matched_concept_reaches_both_retrieval_and_the_sql_prompt(stub_pipeline
         e for e in events
         if e["type"] == "stage" and e["stage"] == "concepts" and e["status"] == "completed"
     )
-    assert "القضية المختنقة" in stage["detail"]
-    assert "0.73" in stage["detail"]
+    # The user-facing stage text names the term and nothing else — no score, no
+    # table name. The glossary behind it still carries the SQL the model needs.
+    assert stage["detail"] == "القضية المختنقة"
     assert "case_congestion" in stage["content"]
 
 
