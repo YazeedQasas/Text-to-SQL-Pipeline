@@ -65,16 +65,21 @@ docker-compose.yml   Qdrant for local dev, plus Debezium under the `cdc` profile
 ## Prerequisites
 
 - An existing MySQL instance (per spec — this repo only creates the schema/tables in it, it doesn't stand up MySQL itself)
-- Docker (for Qdrant), or your own Qdrant endpoint
+- Docker (for Qdrant and Redis), or your own endpoints for each
 - [LM Studio](https://lmstudio.ai/) installed locally, with **Gemma 4 E4B** and a **BGE-M3** embedding model downloaded
 - Python 3.11+
 - Node.js 18+
 
-## 1. Start Qdrant and LM Studio
+## 1. Start Qdrant, Redis and LM Studio
 
 ```bash
 docker compose up -d
 ```
+
+That brings up Qdrant (the vector index) and Redis (the repeated-question
+cache). Redis is optional: with it stopped, every question is simply a cache
+miss and the system answers exactly as it would otherwise — see
+[Repeated-question cache](#repeated-question-cache).
 
 In LM Studio: load Gemma 4 E4B and the BGE-M3 embedding model (Search tab →
 download each), then go to **Developer > Start Server** (default
@@ -85,8 +90,8 @@ match `LLM_MODEL` / `EMBEDDING_MODEL` in your `.env` — LM Studio's IDs vary by
 publisher/quantization, so the defaults in `.env.example` may need adjusting
 to whatever you actually downloaded.
 
-If you already run Qdrant elsewhere, skip `docker compose up -d` and point
-`QDRANT_URL` at it instead.
+If you already run Qdrant or Redis elsewhere, skip `docker compose up -d` and
+point `QDRANT_URL` / `REDIS_URL` at them instead.
 
 ## 2. Set up the database
 
@@ -374,6 +379,106 @@ visible and filterable; the backing store is an append-only JSONL at
 `data/activity.jsonl`, so a backend restart does not lose the history — which
 matters, because restarting the backend is the first thing anyone does when
 something has gone wrong.
+
+## 11. Repeated-question cache
+
+<a id="repeated-question-cache"></a>
+
+Asking a question twice should not cost twice. When a question comes back, the
+SQL written for it the first time is reused instead of regenerated — skipping
+the embedding call (~2.7s, measured) and the SQL-generation completion.
+
+**The query is reused; the results never are.** A hit re-runs the stored SQL
+against MySQL and rewrites the answer from the fresh rows, so a cached question
+always reports today's numbers. Storing the answer text would be faster and
+occasionally wrong, which is the wrong trade for a legal database.
+
+Matching is **lexical**, not semantic. The key is the question with diacritics,
+punctuation and the definite article folded away, so these are one entry:
+
+```
+ما هي القضايا المدورة؟
+ما هي قضايا مدورة
+```
+
+Nothing is matched by meaning, deliberately. A semantic layer cannot skip the
+embedding — it needs the vector to do the lookup — so it could only ever save
+the generation call, and text-to-SQL is unusually hostile to it: the tokens that
+decide a query are exactly the ones an embedding compresses away. `قضايا 2023`
+and `قضايا 2024` sit a hair apart in vector space and need entirely different
+SQL, and a wrong query runs cleanly and reports a confident number for a
+question nobody asked. The hit-rate figures in the Cache panel are what that
+decision should be revisited against.
+
+Other rules:
+
+- **Written from first turns only; readable on any turn.** The asymmetry is the
+  design. Writing only on turn 1 means every entry is context-free by
+  construction — it got there from someone asking cold. That invariant is what
+  makes reading later safe, and a truly anaphoric question (`وكم في غزة؟`) can
+  never be in the cache because nobody opens a chat with it.
+
+  Restricting reads to first turns as well would cost nearly every real hit: a
+  session is one long chat holding many unrelated self-contained questions, not
+  a fresh chat per question. What it accepts is that identical words can mean
+  something narrower deep in a conversation than they did cold —
+  `QUERY_CACHE_FOLLOW_UPS=false` is the escape hatch, and the answer is
+  regenerated with the full history either way.
+- **Successes only.** A refusal, a rejected query or a failed execution says
+  nothing about whether the retrieval behind it was right.
+- **Cleared automatically** whenever a table is documented or removed, or the
+  glossary syncs — stored SQL was written against the schema and terms as they
+  were. Only keys under `QUERY_CACHE_PREFIX` are touched, never `FLUSHDB`.
+- **Re-validated on the way out.** Cached SQL goes through the SELECT-only guard
+  again, because the store is editable and the guard is the only thing between
+  generated text and the database.
+
+Storage is Redis (`docker compose up -d redis`). It is **not load-bearing**: if
+Redis is unreachable every question is a miss and the pipeline runs exactly as
+it did before this existed. The Cache panel on the admin page says so plainly
+rather than showing a hit rate of zero. Set `QUERY_CACHE_ENABLED=false` to turn
+the whole thing off.
+
+### Keyspace
+
+```
+querycache:q:<sha256>   HASH   question, sql, table_names, concept_terms, created_at, uses
+querycache:index        ZSET   member = sha256, score = created_at
+querycache:hits         INT
+querycache:misses       INT
+querycache:cleared_at   FLOAT
+```
+
+The sorted set is there because a cache needs two orderings a plain keyspace
+cannot give cheaply — newest-first for the panel, oldest-first for eviction.
+`SCAN` would supply neither and would walk every key to do it.
+
+### Looking at it
+
+The **Cache panel** on the admin page is the right view for *is this working* —
+it knows what a hit is, which Redis does not.
+
+To look at the data structures themselves:
+
+```bash
+docker compose --profile ui up -d      # RedisInsight on http://localhost:5540
+```
+
+On first open, add the database with host **`redis`** and port **6379** — not
+`localhost`, because RedisInsight runs inside the compose network and
+`localhost` there is its own container.
+
+The profile is opt-in for the same reason `cdc` is: it is a development tool,
+nothing depends on it, and it has no authentication — do not leave it up on a
+shared machine.
+
+Or without any UI at all:
+
+```bash
+docker exec texttosql-redis redis-cli --raw KEYS "querycache:*"
+docker exec texttosql-redis redis-cli --raw ZREVRANGE querycache:index 0 -1 WITHSCORES
+docker exec texttosql-redis redis-cli --raw HGETALL querycache:q:<sha256>
+```
 
 ## Design notes
 

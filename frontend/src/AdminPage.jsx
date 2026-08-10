@@ -1,9 +1,10 @@
 import ActivityPanel from "./ActivityPanel";
+import CachePanel from "./CachePanel";
 import CatalogPanel from "./CatalogPanel";
 import ConceptsPanel from "./ConceptsPanel";
 
 /**
- * The admin page: three widgets, one screen.
+ * The admin page: four widgets, one screen.
  *
  * They were three separate tabs. The work is one job — a change to the data gets
  * documented, the activity log is where you find out, and a concept is what
@@ -33,6 +34,13 @@ export default function AdminPage({ onReviewCountChange }) {
               four rows visible tells you nothing about what has been going on. */}
           <Widget title="نشاط النظام" icon="📋" accent="#2f855a" tint="#e6f4ea" tall>
             <ActivityPanel />
+          </Widget>
+
+          {/* Below the feed rather than beside the glossary: it reports on what
+              the system did, which is the same question the activity log
+              answers, and it is the shortest widget on the page. */}
+          <Widget title="ذاكرة الأسئلة المتكررة" icon="⚡" accent="#6b46c1" tint="#efe9fb">
+            <CachePanel />
           </Widget>
         </div>
       </div>

@@ -1,4 +1,5 @@
-# Local dev infra: Qdrant (vector DB), plus Debezium Server for change capture.
+# Local dev infra: Qdrant (vector DB) and Redis (repeated-question cache), plus
+# Debezium Server for change capture.
 #
 # The LLM and embedding model (BGE-M3) are served by LM
 # Studio, which runs as a desktop app on the host — not containerized here.
@@ -9,8 +10,9 @@
 # already have; point .env at it.
 #
 # Usage:
-#   docker compose up -d                    # Qdrant only
+#   docker compose up -d                    # Qdrant + Redis
 #   docker compose --profile cdc up -d      # + automatic table documentation
+#   docker compose --profile ui up -d       # + RedisInsight on :5540
 #
 # The `cdc` profile is opt-in because Debezium has prerequisites the rest of the
 # stack does not: MySQL must have the binary log switched on, and a replication
@@ -26,6 +28,54 @@ services:
       - "6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
+
+  # Backs the repeated-question cache: the SQL already written for a question
+  # somebody has asked before.
+  #
+  # Nothing here is load-bearing. The backend treats an unreachable Redis as a
+  # permanent cache miss and answers exactly as it did before the cache existed,
+  # so this container can be stopped at any time without breaking the app.
+  #
+  # Persistence is on (appendonly) even though a cache is usually disposable,
+  # and the reason is specific to what is stored: every entry cost an LLM
+  # completion to produce. Losing the file means re-paying for all of them, which
+  # is the one thing this feature exists to avoid.
+  redis:
+    image: redis:7.4-alpine
+    container_name: texttosql-redis
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --appendonly yes
+      --save 60 1
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Browse what the cache is actually storing: http://localhost:5540
+  #
+  # Opt-in, for the same reason the `cdc` profile is — it is a development tool,
+  # not part of the running system, and nothing breaks without it. It also has
+  # no authentication, so it should never be up on a shared machine.
+  #
+  # The Cache panel in the app is the better view of whether the cache is
+  # WORKING (it knows what a hit is; Redis does not). This is for looking at the
+  # data structures themselves — the hashes, the sorted set, TTLs.
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: texttosql-redisinsight
+    profiles: ["ui"]
+    depends_on:
+      - redis
+    ports:
+      - "5540:5540"
+    volumes:
+      - redisinsight_data:/data
 
   # Tails the MySQL binary log and POSTs each change event to the backend at
   # /api/cdc/events, which is what makes a newly created table document itself.
@@ -144,4 +194,6 @@ services:
 
 volumes:
   qdrant_data:
+  redis_data:
+  redisinsight_data:
   debezium_data:

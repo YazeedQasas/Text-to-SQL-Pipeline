@@ -11,6 +11,7 @@ indexed instead of overwriting it, and the collection silently accumulates
 duplicate (and contradictory) schema docs.
 """
 
+import logging
 import uuid
 
 from qdrant_client import AsyncQdrantClient
@@ -24,6 +25,9 @@ from qdrant_client.models import (
 )
 
 from app.config import EMBEDDING_DIM, QDRANT_API_KEY, QDRANT_COLLECTION, QDRANT_URL
+from app.services import query_cache
+
+logger = logging.getLogger(__name__)
 
 DOC_LEVEL_TABLE = "table"
 
@@ -127,6 +131,7 @@ async def upsert_tables(docs: list[dict], vectors: list[list[float]]) -> None:
         for doc, vector in zip(docs, vectors)
     ]
     await _client.upsert(collection_name=QDRANT_COLLECTION, points=points)
+    await _invalidate_query_cache("table documents were written")
 
 
 async def delete_tables(table_names: list[str]) -> None:
@@ -137,3 +142,25 @@ async def delete_tables(table_names: list[str]) -> None:
         collection_name=QDRANT_COLLECTION,
         points_selector=[table_point_id(name) for name in table_names],
     )
+    await _invalidate_query_cache("table documents were removed")
+
+
+async def _invalidate_query_cache(reason: str) -> None:
+    """Drop cached SQL after the indexed schema changes.
+
+    Both entry points to this module — the manual approve flow and the CDC
+    documentation worker — end here, so this is the one place that has to know.
+
+    The whole cache goes rather than only the entries naming the changed tables.
+    A stored query was written against the schema as the model saw it, and a
+    new or reworded table changes which tables a question *should* have used,
+    not only what the ones it did use look like. Entries that never mention the
+    changed table can still be wrong. The cache is small and refills on its own,
+    so the blunt rule costs little and the precise one fails silently.
+    """
+    try:
+        removed = await query_cache.clear()
+        if removed:
+            logger.info("Cleared %d cached queries: %s", removed, reason)
+    except Exception as exc:  # noqa: BLE001 — a stale cache must not fail a good write
+        logger.warning("Could not clear the query cache: %s", exc)

@@ -1530,3 +1530,140 @@ pre {
 .activity-clear-confirm:hover {
   border-color: #e08585;
 }
+
+/* --- Repeated-question cache ----------------------------------------------- */
+
+/* The figures lead. A list of stored questions says the cache has contents; the
+   hit rate is the only thing that says it is working, so it is what the eye
+   should land on first. */
+.cache-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: 0.6rem;
+  margin: 0.9rem 0;
+}
+
+.cache-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfaff;
+}
+
+.cache-stat-value {
+  font-size: 1.35rem;
+  font-weight: 600;
+  color: #553c9a;
+  /* Latin digits in an RTL block otherwise reorder against the percent sign. */
+  direction: ltr;
+  unicode-bidi: isolate;
+  text-align: start;
+}
+
+.cache-stat-label {
+  font-size: 0.78rem;
+  color: #666;
+  line-height: 1.35;
+}
+
+.cache-note {
+  margin: 0 0 0.6rem;
+  font-size: 0.82rem;
+  color: #777;
+}
+
+/* Amber, not red: nothing is broken. Questions are still answered — they just
+   cost what they cost without the cache. */
+.cache-offline {
+  margin: 0.9rem 0;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid #f0d090;
+  border-radius: 8px;
+  background: #fdf6e3;
+  color: #7a5b12;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+.cache-offline code {
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+  background: #f5e8c8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  unicode-bidi: isolate;
+}
+
+.cache-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.8rem;
+}
+
+.cache-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.cache-item {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  background: var(--surface);
+}
+
+.cache-item-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.cache-question {
+  font-weight: 600;
+  font-size: 0.94rem;
+}
+
+.cache-uses {
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  color: #777;
+}
+
+/* The SQL is the half that makes a wrong entry recognisable, so it is shown in
+   full rather than truncated — and scrolls sideways inside its own box so a long
+   query cannot widen the widget. */
+.cache-sql {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  background: #f6f6f8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.cache-item-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+  font-size: 0.78rem;
+  color: #777;
+}
+
+.cache-item-foot button {
+  margin-inline-start: auto;
+}

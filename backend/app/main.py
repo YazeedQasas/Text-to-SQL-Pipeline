@@ -6,11 +6,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import CORS_ALLOW_ORIGINS
 from app.routers.activity import router as activity_router
+from app.routers.cache import router as cache_router
 from app.routers.catalog import router as catalog_router
 from app.routers.cdc import router as cdc_router
 from app.routers.concepts import router as concepts_router
 from app.routers.query import router as query_router
-from app.services import activity, cdc, qdrant_watch
+from app.services import activity, cdc, qdrant_watch, query_cache
 
 logging.basicConfig(level=logging.INFO)
 
@@ -29,6 +30,12 @@ async def lifespan(app: FastAPI):
     API down over a background task.
     """
     activity.load_recent_from_disk()
+
+    # Reported, not enforced. A missing Redis costs the repeated-question cache
+    # and nothing else — every question is simply a miss — so it is a log line
+    # at startup rather than a failure to boot.
+    if await query_cache.ping():
+        logger.info("Query cache connected to Redis.")
 
     try:
         await cdc.service.start()
@@ -57,6 +64,7 @@ async def lifespan(app: FastAPI):
 
     await qdrant_watch.watcher.stop()
     await cdc.service.stop()
+    await query_cache.close()
 
 
 app = FastAPI(title="Text-to-SQL Retrieval System", version="0.2.0", lifespan=lifespan)
@@ -74,6 +82,7 @@ app.include_router(catalog_router)
 app.include_router(cdc_router)
 app.include_router(concepts_router)
 app.include_router(activity_router)
+app.include_router(cache_router)
 
 
 @app.get("/health")

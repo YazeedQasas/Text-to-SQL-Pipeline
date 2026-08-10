@@ -149,6 +149,39 @@ export async function clearActivity() {
   return response.json();
 }
 
+/** DELETE and unwrap FastAPI's `detail` on failure. */
+async function deleteJson(path) {
+  const response = await fetch(`${API_BASE_URL}${path}`, { method: "DELETE" });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = new Error(data?.detail || `فشل الطلب (${response.status})`);
+    error.status = response.status;
+    throw error;
+  }
+  return data;
+}
+
+/**
+ * The repeated-question cache: hit rate, plus the stored questions themselves.
+ *
+ * A snapshot with no stream behind it, unlike the activity log. Nothing here
+ * changes unless somebody asks a question, so the panel reloads on demand
+ * instead of holding a connection open for events that cannot arrive.
+ */
+export function fetchQueryCache(limit = 200) {
+  return getJson(`/api/cache?limit=${limit}`);
+}
+
+/** Empty the cache. Every question is simply answered from scratch next time. */
+export function clearQueryCache() {
+  return deleteJson("/api/cache");
+}
+
+/** Drop one stored question — for SQL that ran cleanly and still answered wrongly. */
+export function removeCachedQuestion(key) {
+  return deleteJson(`/api/cache/${encodeURIComponent(key)}`);
+}
+
 /**
  * Subscribe to the live activity stream.
  *

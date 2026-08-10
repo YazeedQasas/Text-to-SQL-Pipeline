@@ -11,11 +11,16 @@ import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
+from app.config import QUERY_CACHE_ENABLED, QUERY_CACHE_FOLLOW_UPS
 from app.models import ContextUsage, HistoryTurn, QueryResponse, RetrievedTable
-from app.services import arabic, context, llm
+from app.services import arabic, context, llm, query_cache
 from app.services.db import execute_select
 from app.services.embeddings import embed_texts
 from app.services.retrieval import (
+    Concept,
+    SchemaTable,
+    concepts_by_terms,
+    fetch_tables_by_name,
     format_concepts_for_prompt,
     format_tables_for_prompt,
     search_concepts,
@@ -92,6 +97,13 @@ PipelineEvent = StageEvent | TokenEvent | UsageEvent | QueryResponse
 
 CONTEXT_FULL_MESSAGE = "امتلأت ذاكرة المحادثة. ابدأ محادثة جديدة للمتابعة."
 
+# Shown against every stage a cache hit skips. The stages are still reported as
+# completed rather than omitted: the client renders the whole ordered list from
+# STAGES before the run starts, so a silently missing step reads as a stall.
+# Saying which ones were reused is also the only way the user can tell that the
+# fast answer came from a previous question rather than from nowhere.
+REUSED_DETAIL = "أُعيد استخدام سؤال سابق مطابق"
+
 # Failures the user sees. The exception text behind each one is English, often a
 # raw driver message, so it goes to the log and never to the page.
 NO_TABLES_MESSAGE = "لم يتم العثور على معلومات ذات صلة بهذا السؤال."
@@ -99,11 +111,182 @@ SQL_REJECTED_MESSAGE = "تعذّر إتمام هذا الطلب لأنه لم ي
 SQL_FAILED_MESSAGE = "تعذّر استخراج البيانات المطلوبة."
 
 
+async def _reuse_cached_plan(
+    question: str,
+) -> tuple[str, list[SchemaTable], list[Concept]] | None:
+    """The stored SQL for a question already asked, if it is still usable.
+
+    Returns None whenever anything about the entry no longer holds, and the
+    caller then runs the full pipeline. Falling back is always correct; reusing
+    a plan that no longer fits the schema is not.
+
+    The stored SQL is re-validated rather than trusted. It passed the guard when
+    it was written, but the cache is a file on disk that a person can edit, and
+    the guard is the only thing between generated text and the database.
+    """
+    entry = await query_cache.lookup(question)
+    if entry is None:
+        return None
+
+    try:
+        safe_sql = enforce_select_only(entry["sql"])
+    except SQLGuardError as exc:
+        logger.warning("Dropped a cached query that no longer passes the guard: %s", exc)
+        await query_cache.remove(entry["key"])
+        return None
+
+    # Only the NAMES were cached, so this picks up the CURRENT description of
+    # each table — a table re-documented since the entry was written contributes
+    # its new text, not the text that was current when it was first asked about.
+    table_names = list(entry.get("table_names", []))
+    tables = await fetch_tables_by_name(table_names)
+    if len(tables) != len(table_names):
+        # A table the stored SQL depends on is no longer indexed. Invalidation
+        # normally catches this first; this is the backstop for the case where
+        # it did not.
+        logger.info("Dropped a cached query whose tables are no longer indexed: %s", table_names)
+        await query_cache.remove(entry["key"])
+        return None
+
+    return safe_sql, tables, await concepts_by_terms(list(entry.get("concept_terms", [])))
+
+
+async def _answer_from_cache(
+    question: str,
+    history: list[HistoryTurn],
+    safe_sql: str,
+    tables: list[SchemaTable],
+    concepts: list[Concept],
+) -> AsyncIterator[PipelineEvent]:
+    """Run the back half of the pipeline against a plan that already existed."""
+    glossary = format_concepts_for_prompt(concepts)
+    schema_context = format_tables_for_prompt(tables)
+
+    # Reported as completed rather than skipped — see REUSED_DETAIL. The client
+    # tolerates a "completed" with no matching "started"; the stage simply shows
+    # as done with no duration, which is exactly what happened.
+    for stage in ("embedding", "concepts", "retrieval", "prompt", "sql_generation"):
+        yield StageEvent(stage, "completed", REUSED_DETAIL)
+    yield StageEvent("sql_validation", "completed", "عملية قراءة فقط، دون أي تعديل على البيانات")
+
+    budget = context.measure(
+        llm.build_sql_messages(question, schema_context, history, glossary), len(history)
+    )
+    yield UsageEvent(
+        used_tokens=budget.used_tokens,
+        limit_tokens=budget.limit_tokens,
+        history_turns=budget.history_turns,
+    )
+
+    async for event in _execute_and_answer(
+        question, safe_sql, tables, schema_context, glossary, history, concepts, store=False
+    ):
+        yield event
+
+
+async def _execute_and_answer(
+    question: str,
+    safe_sql: str,
+    tables: list[SchemaTable],
+    schema_context: str,
+    glossary: str,
+    history: list[HistoryTurn],
+    concepts: list[Concept],
+    store: bool,
+) -> AsyncIterator[PipelineEvent]:
+    """Everything after the SQL exists, shared by the generated and cached paths.
+
+    The query is executed and the answer written from scratch every time,
+    including on a cache hit. What is reused is the QUERY, never its results —
+    a stored row count would go stale the moment the database moved, and a
+    confidently outdated number out of a legal system is worse than a slow one.
+    """
+    yield StageEvent("sql_execution", "started")
+    try:
+        columns, rows = await execute_select(safe_sql)
+    except Exception as exc:
+        logger.warning("SQL execution failed: %s | sql=%r", exc, safe_sql)
+        raise PipelineError(SQL_FAILED_MESSAGE) from exc
+    yield StageEvent("sql_execution", "completed", "تم استخراج البيانات المطلوبة")
+
+    yield StageEvent("answer_generation", "started")
+    answer_chunks: list[str] = []
+    async for chunk in llm.stream_answer(question, safe_sql, columns, rows, history):
+        answer_chunks.append(chunk)
+        yield TokenEvent("answer_generation", chunk)
+    answer = "".join(answer_chunks).strip()
+    yield StageEvent("answer_generation", "completed")
+
+    # Only a run that got all the way here is worth keeping. A refusal, a
+    # rejected query or a failed execution says nothing about whether the
+    # retrieval behind it was right, so there is nothing to learn from it.
+    if store:
+        await query_cache.store(
+            question,
+            safe_sql,
+            [table.table_name for table in tables],
+            [concept.term for concept in concepts],
+        )
+
+    # Report what the *next* turn will start from: this exchange is about to
+    # join the history the browser replays.
+    next_budget = context.measure(
+        llm.build_sql_messages(
+            question,
+            schema_context,
+            [*history, HistoryTurn(question=question, sql=safe_sql, answer=answer)],
+            glossary,
+        ),
+        len(history) + 1,
+    )
+
+    yield QueryResponse(
+        answer=answer,
+        sql=safe_sql,
+        columns=columns,
+        rows=rows,
+        retrieved_tables=[
+            RetrievedTable(table_name=t.table_name, description=t.description, score=t.score)
+            for t in tables
+        ],
+        usage=ContextUsage(
+            used_tokens=next_budget.used_tokens,
+            limit_tokens=next_budget.limit_tokens,
+            history_turns=next_budget.history_turns,
+        ),
+    )
+
+
 async def run_pipeline(
     question: str, history: list[HistoryTurn] | None = None
 ) -> AsyncIterator[PipelineEvent]:
     # The browser replays the transcript; the backend keeps no session state.
     history = context.trim_history(list(history or []))
+
+    # Reading and writing the cache are governed by DIFFERENT rules, and the
+    # asymmetry is the whole design.
+    #
+    # WRITING is first-turn-only (see the `store=` argument further down), so
+    # every entry is context-free by construction: it can only have come from
+    # someone asking cold, with nothing before it to lean on.
+    #
+    # READING is allowed on any turn, because that invariant is what makes it
+    # safe. A truly anaphoric question — "وكم في غزة؟" — is never in the cache
+    # to begin with, since nobody opens a conversation with it. Restricting
+    # reads to first turns as well would be stricter than the data requires and
+    # would cost nearly every real hit: a session is one long chat holding many
+    # unrelated self-contained questions, not a fresh chat per question.
+    #
+    # What survives is the case where identical words mean something narrower
+    # deep in a conversation than they did cold. QUERY_CACHE_FOLLOW_UPS=false
+    # is the escape hatch; the answer is regenerated with the full history
+    # either way, so the model still sees the conversation it is answering in.
+    if QUERY_CACHE_ENABLED and (QUERY_CACHE_FOLLOW_UPS or not history):
+        reused = await _reuse_cached_plan(question)
+        if reused is not None:
+            async for event in _answer_from_cache(question, history, *reused):
+                yield event
+            return
 
     yield StageEvent("embedding", "started")
     # The question and its fragments go in ONE request. LM Studio's cost here is
@@ -192,46 +375,19 @@ async def run_pipeline(
         raise PipelineError(SQL_REJECTED_MESSAGE) from exc
     yield StageEvent("sql_validation", "completed", "عملية قراءة فقط، دون أي تعديل على البيانات")
 
-    yield StageEvent("sql_execution", "started")
-    try:
-        columns, rows = await execute_select(safe_sql)
-    except Exception as exc:
-        logger.warning("SQL execution failed: %s | sql=%r", exc, safe_sql)
-        raise PipelineError(SQL_FAILED_MESSAGE) from exc
-    yield StageEvent("sql_execution", "completed", "تم استخراج البيانات المطلوبة")
-
-    yield StageEvent("answer_generation", "started")
-    answer_chunks: list[str] = []
-    async for chunk in llm.stream_answer(question, safe_sql, columns, rows, history):
-        answer_chunks.append(chunk)
-        yield TokenEvent("answer_generation", chunk)
-    answer = "".join(answer_chunks).strip()
-    yield StageEvent("answer_generation", "completed")
-
-    # Report what the *next* turn will start from: this exchange is about to
-    # join the history the browser replays.
-    next_budget = context.measure(
-        llm.build_sql_messages(
-            question,
-            schema_context,
-            [*history, HistoryTurn(question=question, sql=safe_sql, answer=answer)],
-            glossary,
-        ),
-        len(history) + 1,
-    )
-
-    yield QueryResponse(
-        answer=answer,
-        sql=safe_sql,
-        columns=columns,
-        rows=rows,
-        retrieved_tables=[
-            RetrievedTable(table_name=t.table_name, description=t.description, score=t.score)
-            for t in tables
-        ],
-        usage=ContextUsage(
-            used_tokens=next_budget.used_tokens,
-            limit_tokens=next_budget.limit_tokens,
-            history_turns=next_budget.history_turns,
-        ),
-    )
+    async for event in _execute_and_answer(
+        question,
+        safe_sql,
+        tables,
+        schema_context,
+        glossary,
+        history,
+        concepts,
+        # First turns only, whatever the read rule allows. This is the invariant
+        # the read side depends on: an answer produced with a conversation
+        # behind it may mean something that its wording alone does not, and
+        # storing it would put a context-dependent query where a later,
+        # unrelated conversation could pick it up.
+        store=QUERY_CACHE_ENABLED and not history,
+    ):
+        yield event
