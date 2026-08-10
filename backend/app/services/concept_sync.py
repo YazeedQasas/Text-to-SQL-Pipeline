@@ -528,6 +528,20 @@ async def _refresh_query_cache() -> None:
     except Exception as exc:  # noqa: BLE001 — a stale cache is not worth failing a good sync
         logger.warning("Could not refresh the concept cache after sync: %s", exc)
 
+    # A different cache from the one above, despite this function's name: the
+    # repeated-question cache holds SQL that was generated with the OLD glossary
+    # in the prompt. An edited definition or SQL fragment was edited because the
+    # queries it produced were wrong, so replaying them is the one thing that
+    # must not happen after a sync.
+    try:
+        from app.services import query_cache
+
+        removed = await query_cache.clear()
+        if removed:
+            logger.info("Cleared %d cached queries after a concept sync", removed)
+    except Exception as exc:  # noqa: BLE001 — same reasoning
+        logger.warning("Could not clear the query cache after sync: %s", exc)
+
 
 def _record_success(result: SyncResult, forced: bool) -> None:
     parts = []

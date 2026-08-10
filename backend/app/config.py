@@ -126,6 +126,58 @@ CONTEXT_CARRY_TABLES = int(os.getenv("CONTEXT_CARRY_TABLES", "3"))
 MAX_RESULT_ROWS = int(os.getenv("MAX_RESULT_ROWS", "200"))
 SQL_STATEMENT_TIMEOUT_SECONDS = int(os.getenv("SQL_STATEMENT_TIMEOUT_SECONDS", "10"))
 
+# --- Repeated-question cache (Redis) -------------------------------------------
+# Stores the SQL a question resolved to, keyed by the question's normalized form,
+# so a repeat skips both the embedding call (~2.7s, measured) and the SQL
+# generation completion. The stored SQL is re-executed every time and the answer
+# is regenerated from the fresh rows — result data is never cached.
+#
+# Matching is LEXICAL only. See services/query_cache.py for why a semantic layer
+# is not here yet: it cannot skip the embedding, and questions that differ by a
+# year, a place name or a negation embed almost identically while needing
+# entirely different SQL.
+#
+# Redis is not load-bearing. Every operation fails soft: if the server is down,
+# every question is a cache miss and the pipeline runs exactly as it did before
+# this feature existed. Nothing here is worth failing a good answer over.
+QUERY_CACHE_ENABLED = os.getenv("QUERY_CACHE_ENABLED", "true").lower() == "true"
+# Whether a question asked partway through a conversation may be answered from
+# the cache. Entries are ALWAYS written from first turns only, so everything in
+# the cache is context-free by construction — it got there from someone asking
+# cold, with no conversation to lean on. Reading on later turns is what makes
+# the feature useful at all: real sessions are one long chat containing many
+# unrelated self-contained questions, and requiring a fresh chat per hit means
+# the cache almost never fires.
+#
+# The rule is also self-limiting. A genuinely anaphoric question ("وكم في غزة؟")
+# can never be IN the cache, because nobody asks it as a first turn, so it can
+# never be served from it.
+#
+# The residual risk is real, not theoretical: the same words can mean something
+# narrower deep in a conversation ("كم عدد القضايا؟" after five turns about
+# Gaza) than they did cold. The answer is still written with the full history in
+# the prompt, and the SQL is shown in the UI, but neither is a guarantee. Set
+# this false for the strict first-turn-only behaviour.
+QUERY_CACHE_FOLLOW_UPS = os.getenv("QUERY_CACHE_FOLLOW_UPS", "true").lower() == "true"
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+# Namespaces every key this feature owns, so `clear()` can find exactly its own
+# keys and a Redis shared with anything else is never touched.
+QUERY_CACHE_PREFIX = os.getenv("QUERY_CACHE_PREFIX", "querycache")
+# A ceiling, not a tuning knob. The realistic number of distinct questions this
+# system will ever see is in the hundreds; this only stops an automated client
+# growing the keyspace without bound. Oldest entries are evicted first.
+QUERY_CACHE_MAX_ENTRIES = int(os.getenv("QUERY_CACHE_MAX_ENTRIES", "5000"))
+# Optional expiry per entry, 0 to disable (the default). Invalidation here is
+# event-driven — the cache is cleared when a table is documented or the glossary
+# syncs — so a TTL is a backstop for changes that arrive through neither, such
+# as a column edited directly in MySQL without CDC running.
+QUERY_CACHE_TTL_SECONDS = int(os.getenv("QUERY_CACHE_TTL_SECONDS", "0"))
+# How long to wait on Redis before giving up and treating the turn as a miss.
+# Deliberately short: the cache exists to save seconds, so it must never be able
+# to ADD them. A question answered without the cache is fine; one that stalls
+# waiting for it is not.
+REDIS_TIMEOUT_SECONDS = float(os.getenv("REDIS_TIMEOUT_SECONDS", "2.0"))
+
 # --- Legal concept file sync --------------------------------------------------
 # The JSON file a user edits, and the snapshot that makes the sync three-way.
 # Without the snapshot, "removed from the file" and "added to Qdrant" are

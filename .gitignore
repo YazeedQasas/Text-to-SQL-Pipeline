@@ -23,6 +23,7 @@ Thumbs.db
 #   .concepts-sync-state.json  the sync's record of the last agreed state
 #   activity.jsonl             the Activity tab's event log
 #   review-queue.json          what the automated path documented, for review
+# The repeated-question cache is NOT here: it lives in Redis, not under data/.
 data/.concepts-sync-state.json
 data/activity.jsonl
 data/review-queue.json

@@ -254,6 +254,25 @@ async def search_concepts(
     return ordered[:top_k]
 
 
+async def concepts_by_terms(terms: list[str]) -> list[Concept]:
+    """Load specific glossary entries by term, skipping any that no longer exist.
+
+    Used by the repeated-question cache, which stores the TERMS a question
+    matched rather than their definitions. Rebuilding from the live glossary is
+    what keeps an edited definition or SQL fragment from being frozen into a
+    cache entry — and it costs nothing, because the glossary is already held in
+    memory for lexical matching.
+
+    Scored 1.0: these were matched once for this exact question, so there is no
+    fresh similarity to report and nothing to rank them against.
+    """
+    if not terms:
+        return []
+
+    by_term = {payload["term"]: payload for payload in await load_all_concepts()}
+    return [_to_concept(by_term[term], 1.0, "cached") for term in terms if term in by_term]
+
+
 async def _best_gram_scores(
     gram_vectors: list[tuple[str, list[float]]],
 ) -> dict[str, float]:

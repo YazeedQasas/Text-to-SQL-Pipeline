@@ -1,17 +1,20 @@
-"""End-to-end tests for the query pipeline with all external services stubbed.
+﻿"""End-to-end tests for the query pipeline with all external services stubbed.
 
 The pipeline imports `embed_text` / `search_tables` / `execute_select` by name,
 so those are patched on `app.services.pipeline`; `llm` is imported as a module
 and patched there.
 """
 
+import asyncio
 import json
 
+import fakeredis
+import fakeredis.aioredis
 import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.services import context, llm, pipeline, retrieval
+from app.services import catalog, context, llm, pipeline, query_cache, retrieval
 from app.services.retrieval import SchemaTable
 
 client = TestClient(app)
@@ -33,9 +36,30 @@ async def _chunks(*parts: str):
         yield part
 
 
+@pytest.fixture(autouse=True)
+def isolated_query_cache():
+    """Give every test its own in-process Redis for the question cache.
+
+    Autouse because the client is module-global: without it these tests would
+    talk to whatever real Redis is on the machine, and each test asking the same
+    question would be served from a previous test's entry rather than from its
+    own stubs.
+    """
+    server = fakeredis.FakeServer()
+    query_cache.set_client(fakeredis.aioredis.FakeRedis(server=server, decode_responses=True))
+    yield server
+    query_cache.set_client(None)
+
+
 @pytest.fixture
 def stub_pipeline(monkeypatch):
     """Stub every external call the pipeline makes; return the knobs tests tweak."""
+    # These tests exercise the GENERATION path, and several of them run the same
+    # question twice to compare two outcomes. With the cache on, the second run
+    # would be answered from the first and would assert against stubs that were
+    # never reached. The cache path has its own tests at the end of this file.
+    monkeypatch.setattr(pipeline, "QUERY_CACHE_ENABLED", False)
+
     state = {
         "sql_parts": ["SELECT case_id ", "FROM cases"],
         "tables": [_table()],
@@ -50,6 +74,11 @@ def stub_pipeline(monkeypatch):
         "boosted_with": None,
         "sql_glossary": None,
         "grams": None,
+        # How often the expensive halves actually ran, so a cache test can show
+        # that generation was skipped while execution was not.
+        "sql_calls": 0,
+        "execute_calls": 0,
+        "fetched_by_name": None,
     }
 
     async def fake_embed_texts(texts):
@@ -66,9 +95,18 @@ def stub_pipeline(monkeypatch):
         return state["tables"]
 
     async def fake_execute_select(_sql):
+        state["execute_calls"] += 1
         return ["case_id"], state["rows"]
 
+    async def fake_fetch_tables_by_name(names):
+        state["fetched_by_name"] = list(names)
+        return [table for table in state["tables"] if table.table_name in names]
+
+    async def fake_concepts_by_terms(terms):
+        return [concept for concept in state["concepts"] if concept.term in terms]
+
     def fake_stream_sql(_question, _schema, history=(), glossary=""):
+        state["sql_calls"] += 1
         state["sql_history"] = list(history)
         state["sql_glossary"] = glossary
         return _chunks(*state["sql_parts"])
@@ -81,9 +119,18 @@ def stub_pipeline(monkeypatch):
     monkeypatch.setattr(pipeline, "search_concepts", fake_search_concepts)
     monkeypatch.setattr(pipeline, "search_with_carryover", fake_search_with_carryover)
     monkeypatch.setattr(pipeline, "execute_select", fake_execute_select)
+    monkeypatch.setattr(pipeline, "fetch_tables_by_name", fake_fetch_tables_by_name)
+    monkeypatch.setattr(pipeline, "concepts_by_terms", fake_concepts_by_terms)
     monkeypatch.setattr(llm, "stream_sql", fake_stream_sql)
     monkeypatch.setattr(llm, "stream_answer", fake_stream_answer)
     return state
+
+
+@pytest.fixture
+def cached_pipeline(stub_pipeline, monkeypatch):
+    """`stub_pipeline`, with the repeated-question cache switched back on."""
+    monkeypatch.setattr(pipeline, "QUERY_CACHE_ENABLED", True)
+    return stub_pipeline
 
 
 def _events(question: str = "how many cases?", history: list | None = None) -> list[dict]:
@@ -350,3 +397,137 @@ def test_glossary_is_counted_against_the_context_budget(stub_pipeline):
     with_glossary = next(e for e in _events() if e["type"] == "usage")["usage"]["used_tokens"]
 
     assert with_glossary > without
+
+
+# --- The repeated-question cache ----------------------------------------------
+
+
+def test_a_repeated_question_skips_generation_but_still_runs_the_query(cached_pipeline):
+    """The whole point: reuse the QUERY, never its results.
+
+    Asking twice must cost one SQL generation and two executions — the second
+    answer has to come from whatever the database holds now, not from what it
+    held the first time.
+    """
+    _events("كم عدد القضايا؟")
+    _events("كم عدد القضايا؟")
+
+    assert cached_pipeline["sql_calls"] == 1
+    assert cached_pipeline["execute_calls"] == 2
+
+
+def test_the_cache_ignores_punctuation_the_way_a_reader_would(cached_pipeline):
+    _events("كم عدد القضايا؟")
+    _events("كم عدد القضايا")
+
+    assert cached_pipeline["sql_calls"] == 1
+
+
+def test_a_reused_answer_still_reports_its_tables(cached_pipeline):
+    """Follow-ups carry the previous turn's tables, so a cached turn that
+    reported none would silently break the next question."""
+    _events("كم عدد القضايا؟")
+    result = next(e for e in _events("كم عدد القضايا؟") if e["type"] == "result")["result"]
+
+    assert [t["table_name"] for t in result["retrieved_tables"]] == ["cases"]
+    assert cached_pipeline["fetched_by_name"] == ["cases"]
+
+
+def test_a_reused_answer_marks_the_stages_it_skipped(cached_pipeline):
+    _events("كم عدد القضايا؟")
+    events = _events("كم عدد القضايا؟")
+
+    generation = next(
+        e for e in events
+        if e["type"] == "stage" and e["stage"] == "sql_generation" and e["status"] == "completed"
+    )
+    assert generation["detail"] == pipeline.REUSED_DETAIL
+    # The stages that genuinely ran must not claim to have been reused.
+    execution = next(
+        e for e in events
+        if e["type"] == "stage" and e["stage"] == "sql_execution" and e["status"] == "completed"
+    )
+    assert execution["detail"] != pipeline.REUSED_DETAIL
+
+
+def _prior_turn(question="كم عدد القضايا؟"):
+    """One completed turn, as the browser would replay it."""
+    return [_history(question=question, sql="SELECT case_id FROM cases", answer="One.")]
+
+
+def test_a_question_asked_later_in_a_chat_can_still_be_reused(cached_pipeline):
+    """Reads are allowed on any turn.
+
+    A session is one long chat holding many unrelated self-contained questions.
+    Restricting reads to first turns would cost nearly every real hit.
+    """
+    _events("كم عدد القضايا؟")
+    _events("كم عدد القضايا؟", history=_prior_turn("سؤال آخر تمامًا"))
+
+    assert cached_pipeline["sql_calls"] == 1
+
+
+def test_strict_mode_refuses_to_reuse_on_a_follow_up(cached_pipeline, monkeypatch):
+    """The escape hatch, for a deployment that will not accept the residual risk."""
+    monkeypatch.setattr(pipeline, "QUERY_CACHE_FOLLOW_UPS", False)
+
+    _events("كم عدد القضايا؟")
+    _events("كم عدد القضايا؟", history=_prior_turn("سؤال آخر تمامًا"))
+
+    assert cached_pipeline["sql_calls"] == 2
+
+
+def test_a_follow_up_answer_is_never_written_to_the_cache(cached_pipeline):
+    """The invariant the read side depends on: everything stored is context-free.
+
+    An answer produced with a conversation behind it can mean something its
+    wording alone does not, so it must never become an entry a different
+    conversation could pick up.
+    """
+    _events("وكم في غزة؟", history=_prior_turn())
+
+    assert asyncio.run(query_cache.stats())["entries"] == 0
+
+    # And asking it again as a follow-up still regenerates, because nothing
+    # was ever stored for it.
+    _events("وكم في غزة؟", history=_prior_turn())
+    assert cached_pipeline["sql_calls"] == 2
+
+
+def test_a_refused_question_is_not_cached(cached_pipeline):
+    """A refusal says nothing about whether the retrieval behind it was right."""
+    cached_pipeline["sql_parts"] = ["NO_QUERY: لا توجد بيانات."]
+    _events("سؤال بلا إجابة")
+    _events("سؤال بلا إجابة")
+
+    assert cached_pipeline["sql_calls"] == 2
+
+
+def test_documenting_a_table_drops_the_cache(cached_pipeline):
+    """Stored SQL was written against the schema as it was."""
+    _events("كم عدد القضايا؟")
+    assert asyncio.run(query_cache.stats())["entries"] == 1
+
+    asyncio.run(catalog._invalidate_query_cache("a table was documented"))
+
+    _events("كم عدد القضايا؟")
+    assert cached_pipeline["sql_calls"] == 2
+
+
+def test_a_dead_redis_still_answers_the_question(cached_pipeline, monkeypatch):
+    """The cache is an optimisation. Losing Redis costs the optimisation and
+    nothing else — every question simply runs the full pipeline."""
+
+    class _DeadRedis:
+        def __getattr__(self, _name):
+            def boom(*_args, **_kwargs):
+                raise ConnectionError("Connection refused")
+
+            return boom
+
+    monkeypatch.setattr(query_cache, "_client", _DeadRedis())
+
+    result = next(e for e in _events("كم عدد القضايا؟") if e["type"] == "result")["result"]
+
+    assert result["answer"] == "One case found."
+    assert cached_pipeline["sql_calls"] == 1
