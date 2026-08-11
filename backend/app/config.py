@@ -94,6 +94,35 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-bge-m3")
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
 LLM_MODEL = os.getenv("LLM_MODEL", "google/gemma-4-e4b")
 
+# The APC adapter (services/adapter.py): rebuilds task-specific SQL from a
+# cached plan template. A SEPARATE, SMALLER model on purpose — adapting a worked
+# example to a new set of values is a far narrower job than planning a query
+# from a schema, and the whole point of the cache is that the fast path must not
+# pay planner prices.
+#
+# Two measured facts about this deployment shape everything below:
+#
+#   1. LLM_MODEL (Gemma 4 E4B) is a REASONING model. On a trivial COUNT query it
+#      spent 389 of 432 completion tokens on hidden reasoning. That is the real
+#      source of the 10-22s intent-extraction latency measured in stage 1 — not
+#      prefill, not model swapping. Llama-3.1-8B has no reasoning phase and
+#      answers immediately, which is the property the adapter is chosen for.
+#   2. It is loaded at ctx=8192, HALF of CONTEXT_WINDOW_TOKENS. The adapter
+#      prompt carries a schema block that measured 6945 characters on a real
+#      retrieval, so the budget below is not theoretical — see
+#      ADAPTER_CONTEXT_WINDOW_TOKENS.
+ADAPTER_MODEL = os.getenv("ADAPTER_MODEL", "meta-llama-3.1-8b-instruct")
+# Must match the context length the ADAPTER is loaded with in LM Studio, which
+# is not the same value as CONTEXT_WINDOW_TOKENS — the two models are loaded
+# independently and Llama-3.1-8B defaults to 8192 here. Setting this higher than
+# the loaded value moves the failure from a clean fall-back-to-full-pipeline
+# into silent truncation of the prompt HEAD, which is where the schema sits.
+ADAPTER_CONTEXT_WINDOW_TOKENS = int(os.getenv("ADAPTER_CONTEXT_WINDOW_TOKENS", "8192"))
+# Head-room for the adapter's reply. Smaller than CONTEXT_OUTPUT_RESERVE_TOKENS
+# because the adapter emits one SQL statement and nothing else — no reasoning
+# phase, no prose.
+ADAPTER_OUTPUT_RESERVE_TOKENS = int(os.getenv("ADAPTER_OUTPUT_RESERVE_TOKENS", "400"))
+
 # --- Schema catalog review ----------------------------------------------------
 # How many real rows to show the reviewing LLM per changed table. This is the
 # strongest signal it has for telling a legitimately-named domain table apart
@@ -211,6 +240,31 @@ QUERY_CACHE_TTL_SECONDS = int(os.getenv("QUERY_CACHE_TTL_SECONDS", "0"))
 # to ADD them. A question answered without the cache is fine; one that stalls
 # waiting for it is not.
 REDIS_TIMEOUT_SECONDS = float(os.getenv("REDIS_TIMEOUT_SECONDS", "2.0"))
+
+# --- Shadow verification (APC) -------------------------------------------------
+# A coarse cache key merges questions on purpose, which means the argument that
+# a given merge is SAFE is an argument, not a measurement. Shadow verification
+# turns it into a measurement: for the first few hits on a key, run the cached
+# plan AND the full pipeline, compare the two queries at the plan level
+# (services/plan_shape.py), and quarantine the key if they ever disagree.
+#
+# This is the only mechanism here that can catch a wrong-merge class nobody
+# anticipated. Every other rail encodes a failure we already know about.
+#
+# It costs a full pipeline run on the hits it verifies, so it is a warm-up tax
+# per key rather than a permanent one: once a key has agreed with the reference
+# SHADOW_CONFIRMATIONS times, it is trusted and stops being shadowed.
+SHADOW_VERIFY_ENABLED = os.getenv("SHADOW_VERIFY_ENABLED", "true").lower() == "true"
+# Agreeing observations before a key is trusted. Three is a starting value, not
+# a calibrated one — it has no probe behind it yet, unlike
+# CONCEPT_SCORE_THRESHOLD. Raise it once there is a real question corpus to
+# measure against.
+SHADOW_CONFIRMATIONS = int(os.getenv("SHADOW_CONFIRMATIONS", "3"))
+# A single disagreement quarantines the key. Not a ratio: a key that produced
+# one wrong plan has been shown to merge questions it should not, and how often
+# it also produced right ones says nothing about that.
+SHADOW_LEDGER_FILE = _path_from_env("SHADOW_LEDGER_FILE", "data/shadow-ledger.jsonl")
+SHADOW_RING_SIZE = int(os.getenv("SHADOW_RING_SIZE", "500"))
 
 # --- Legal concept file sync --------------------------------------------------
 # The JSON file a user edits, and the snapshot that makes the sync three-way.

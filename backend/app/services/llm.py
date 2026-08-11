@@ -91,14 +91,35 @@ stored records.
 """
 
 
-async def _chat_stream(messages: list[dict]) -> AsyncIterator[str]:
-    """Yield content deltas from an OpenAI-compatible streaming chat completion."""
+async def _chat_stream(messages: list[dict], model: str | None = None) -> AsyncIterator[str]:
+    """Yield content deltas from an OpenAI-compatible streaming chat completion.
+
+    `model` selects which loaded model answers, defaulting to the planner
+    (LLM_MODEL). The APC adapter passes ADAPTER_MODEL here.
+
+    THE CHAT TEMPLATE IS THE SERVER'S JOB, AND THAT WAS VERIFIED RATHER THAN
+    ASSUMED. Gemma and Llama use incompatible prompt formats (<start_of_turn>
+    versus <|start_header_id|>), so sending one model's format to the other
+    would degrade output in a way that looks like a bad prompt rather than a
+    transport bug. Measured against this deployment:
+
+        /v1/chat/completions on Llama          -> clean SQL, clean stop
+        /v1/completions with no template       -> rambles, invents further Q&A
+        /v1/completions with a hand-written
+            Llama-3.1 template                 -> identical to the first
+
+    The first and third agree and the second does not, which is what proves
+    /chat/completions applies each model's own template from its GGUF metadata.
+    No special tokens leaked into any response. So callers pass plain messages
+    and must NOT hand-format a prompt here — doing so would double-apply the
+    template.
+    """
     async with httpx.AsyncClient(base_url=LM_STUDIO_BASE_URL, timeout=120.0) as client:
         async with client.stream(
             "POST",
             "/chat/completions",
             json={
-                "model": LLM_MODEL,
+                "model": model or LLM_MODEL,
                 "messages": messages,
                 "stream": True,
                 "temperature": 0.1,
@@ -296,7 +317,7 @@ def _extract_json_object(text: str) -> str:
     raise ValueError("Unterminated JSON object in model response.")
 
 
-async def chat_json(system_prompt: str, user_prompt: str) -> dict:
+async def chat_json(system_prompt: str, user_prompt: str, model: str | None = None) -> dict:
     """Run a non-streaming completion and parse the reply as a JSON object.
 
     Reuses the streaming transport rather than adding a second HTTP shape to
@@ -309,7 +330,8 @@ async def chat_json(system_prompt: str, user_prompt: str) -> dict:
             [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
-            ]
+            ],
+            model=model,
         )
     )
     parsed = json.loads(_extract_json_object(raw))
