@@ -80,8 +80,26 @@ body {
   font-weight: 650;
 }
 
+/* --- Icons ------------------------------------------------------------------ */
+/* Inline SVG, stroked in currentColor — see Icons.jsx. `block` removes the
+   descender gap an inline SVG inherits from the text baseline, which is what
+   makes an icon sit a pixel low next to its label. */
+
+.icon {
+  display: block;
+  flex-shrink: 0;
+}
+
 .nav-icon {
-  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  color: var(--ink-faint);
+}
+
+/* The active page's icon takes the same blue as its label, rather than staying
+   grey and reading as disabled. */
+.nav-item-active .nav-icon {
+  color: currentColor;
 }
 
 .main {
@@ -189,7 +207,9 @@ body {
   height: 1.75rem;
   border-radius: 8px;
   background: var(--widget-tint, #e8f0fe);
-  font-size: 0.9rem;
+  /* Stroked in the widget's own accent, which is the whole reason these are SVG
+     and not emoji: the tint and the glyph now come from one pair of values. */
+  color: var(--widget-accent, var(--accent));
 }
 
 .widget-title {
@@ -287,26 +307,218 @@ body {
   text-overflow: ellipsis;
 }
 
-.new-chat {
+/* --- The conversation list -------------------------------------------------- */
+/* Lives in the sidebar, below the page nav. Scrolls on its own so a long list
+   never pushes the nav off screen. */
+
+.chat-list {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  margin-top: 0.9rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+
+.chat-list-new {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   flex-shrink: 0;
-  margin-inline-start: auto;
-  padding: 0.35rem 0.8rem;
-  border: 1px solid #e0e0e0;
-  border-radius: 999px;
-  background: #fff;
+  margin-bottom: 0.4rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px dashed #d6dae0;
+  border-radius: 8px;
+  background: none;
   font: inherit;
-  font-size: 0.8rem;
-  color: #3a3a3a;
+  font-size: 0.85rem;
+  color: var(--ink-muted);
+  text-align: start;
   cursor: pointer;
 }
 
-.new-chat:hover:not(:disabled) {
-  background: #f5f5f5;
+.chat-list-new:hover {
+  border-style: solid;
+  background: #eef0f3;
+  color: var(--ink);
 }
 
-.new-chat:disabled {
-  color: #bdbdbd;
-  cursor: not-allowed;
+.chat-list-empty {
+  padding: 0.5rem 0.7rem;
+  font-size: 0.8rem;
+  color: var(--ink-faint);
+}
+
+.chat-rows {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chat-row {
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+}
+
+.chat-row:hover {
+  background: #eef0f3;
+}
+
+.chat-row-active {
+  background: #e8f0fe;
+}
+
+.chat-row-main {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 1;
+  min-width: 0;
+  padding: 0.45rem 0.7rem;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 0.85rem;
+  color: #3a3a3a;
+  text-align: start;
+  cursor: pointer;
+}
+
+.chat-row-active .chat-row-main {
+  color: #174ea6;
+  font-weight: 600;
+}
+
+/* One line, clipped. A chat's title is the first question truncated, which is
+   often long — wrapping it would make rows different heights and the list much
+   harder to scan. */
+.chat-row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* A chat currently producing an answer. Present because chats run concurrently
+   and the one working is often not the one on screen. */
+.chat-row-running {
+  flex-shrink: 0;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: chat-row-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes chat-row-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Revealed on hover or when the row is the active one, so a list at rest is
+   just titles. */
+.chat-row-actions,
+.chat-row-confirm {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding-inline-end: 0.35rem;
+}
+
+.chat-row-actions {
+  opacity: 0;
+}
+
+.chat-row:hover .chat-row-actions,
+.chat-row-active .chat-row-actions,
+.chat-row-actions:focus-within {
+  opacity: 1;
+}
+
+.chat-row-actions button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  font: inherit;
+  color: var(--ink-faint);
+  cursor: pointer;
+  line-height: 1;
+}
+
+.chat-row-actions button:hover {
+  background: #dfe3e8;
+  color: var(--ink);
+}
+
+.chat-row-confirm button {
+  padding: 0.2rem 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  font: inherit;
+  font-size: 0.72rem;
+  color: var(--ink-muted);
+  cursor: pointer;
+}
+
+.chat-row-danger {
+  border-color: #e9b3b3 !important;
+  color: #b42318 !important;
+}
+
+.chat-row-editing {
+  padding: 0.1rem 0.25rem;
+}
+
+.chat-row-input {
+  width: 100%;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--surface);
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+
+.chat-list-error {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.6rem 1.5rem 0;
+}
+
+.chat-list-error button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-inline-start: auto;
+  padding: 0.25rem;
+  border: none;
+  border-radius: 5px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.chat-list-error button:hover {
+  background: rgba(0, 0, 0, 0.06);
 }
 
 .context-full {
@@ -333,6 +545,15 @@ body {
   font-size: 0.78rem;
   color: #7a4f01;
   cursor: pointer;
+}
+
+/* An answer that was produced but not stored. Red rather than amber: a full
+   context window is a limit working as designed, while this is a failure, and
+   the only chance to copy the answer is before the page reloads. */
+.context-warn {
+  border-color: #e9b3b3;
+  background: #fef3f2;
+  color: #912018;
 }
 
 .chat-scroller {

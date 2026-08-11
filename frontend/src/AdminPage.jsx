@@ -2,6 +2,7 @@ import ActivityPanel from "./ActivityPanel";
 import CachePanel from "./CachePanel";
 import CatalogPanel from "./CatalogPanel";
 import ConceptsPanel from "./ConceptsPanel";
+import { BoltIcon, BookIcon, ListIcon, RefreshIcon } from "./Icons";
 
 /**
  * The admin page: four widgets, one screen.
@@ -18,13 +19,16 @@ export default function AdminPage({ onReviewCountChange }) {
     <div className="admin">
       <div className="admin-grid">
         <div className="admin-column">
-          <Widget title="المفاهيم القانونية" icon="📖" accent="#2b6cb0" tint="#e8f0fe">
+          <Widget title="المفاهيم القانونية" Icon={BookIcon} accent="#2b6cb0" tint="#e8f0fe">
             <ConceptsPanel />
           </Widget>
 
-          {/* 🔄 rather than a filing-cabinet glyph: the dark card-index emoji
-              reads as a smudge at this size against the amber tint. */}
-          <Widget title="تعديلات في قاعدة البيانات" icon="🔄" accent="#b7791f" tint="#fdf1d6">
+          <Widget
+            title="تعديلات في قاعدة البيانات"
+            Icon={RefreshIcon}
+            accent="#b7791f"
+            tint="#fdf1d6"
+          >
             <CatalogPanel onReviewCountChange={onReviewCountChange} />
           </Widget>
         </div>
@@ -32,14 +36,14 @@ export default function AdminPage({ onReviewCountChange }) {
         <div className="admin-column">
           {/* Taller than the others by design: it is a feed, and a feed with
               four rows visible tells you nothing about what has been going on. */}
-          <Widget title="نشاط النظام" icon="📋" accent="#2f855a" tint="#e6f4ea" tall>
+          <Widget title="نشاط النظام" Icon={ListIcon} accent="#2f855a" tint="#e6f4ea" tall>
             <ActivityPanel />
           </Widget>
 
           {/* Below the feed rather than beside the glossary: it reports on what
               the system did, which is the same question the activity log
               answers, and it is the shortest widget on the page. */}
-          <Widget title="ذاكرة الأسئلة المتكررة" icon="⚡" accent="#6b46c1" tint="#efe9fb">
+          <Widget title="ذاكرة الأسئلة المتكررة" Icon={BoltIcon} accent="#6b46c1" tint="#efe9fb">
             <CachePanel />
           </Widget>
         </div>
@@ -55,15 +59,17 @@ export default function AdminPage({ onReviewCountChange }) {
  * class, so adding a fourth widget is a colour in this file and nothing in the
  * stylesheet.
  */
-function Widget({ title, icon, accent, tint, tall, children }) {
+function Widget({ title, Icon, accent, tint, tall, children }) {
   return (
     <section
       className={`widget${tall ? " widget-tall" : ""}`}
       style={{ "--widget-accent": accent, "--widget-tint": tint }}
     >
       <div className="widget-head">
-        <span className="widget-icon" aria-hidden="true">
-          {icon}
+        {/* The icon takes the widget's accent colour, which an emoji could not —
+            it carries its own palette and ignored the one around it. */}
+        <span className="widget-icon">
+          <Icon size={18} />
         </span>
         <h2 className="widget-title">{title}</h2>
       </div>

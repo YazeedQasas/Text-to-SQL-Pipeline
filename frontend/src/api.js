@@ -129,6 +129,58 @@ export async function saveConcept(concept) {
    watcher, but nothing in the UI calls them any more: the admin page writes to
    Qdrant directly and the file follows. */
 
+/* --- Chats -------------------------------------------------------------------
+   Conversations live on the server (db/07_app_schema.sql), so a chat survives a
+   reload and each one carries its own context window — the backend measures the
+   window from that chat's stored turns.
+
+   404 is not exceptional here. Chats can be deleted from another tab while this
+   one still has them listed, so callers treat it as "drop it from the list"
+   rather than as a failure. */
+
+/** Every chat, by last activity, newest first. */
+export function fetchChats() {
+  return getJson("/api/chats");
+}
+
+/**
+ * Start a chat.
+ *
+ * The id is generated here rather than by the server so the UI can select the
+ * new chat and start streaming into it without waiting for the round trip.
+ * Posting an id that already exists returns that chat unchanged, so a retry is
+ * safe.
+ */
+export function createChat(id) {
+  return postJson("/api/chats", { id });
+}
+
+/** One chat with its transcript — everything needed to draw it. */
+export function fetchChat(chatId) {
+  return getJson(`/api/chats/${encodeURIComponent(chatId)}`);
+}
+
+/** Retitle a chat. Titles are otherwise the first question, truncated. */
+export async function renameChat(chatId, title) {
+  const response = await fetch(`${API_BASE_URL}/api/chats/${encodeURIComponent(chatId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = new Error(data?.detail || `فشل الطلب (${response.status})`);
+    error.status = response.status;
+    throw error;
+  }
+  return data;
+}
+
+/** Delete a chat and its transcript. Irreversible. */
+export function deleteChat(chatId) {
+  return deleteJson(`/api/chats/${encodeURIComponent(chatId)}`);
+}
+
 /** The most recent activity events, newest first. */
 export function fetchActivity(limit = 100) {
   return getJson(`/api/activity?limit=${limit}`);
@@ -212,9 +264,17 @@ export function subscribeToActivity(onEvent, onError) {
  * EventSource can't issue a POST, so this reads the server-sent event stream
  * off the fetch response body directly.
  *
- * The backend holds no session state, so `history` — the transcript so far — is
- * replayed with every question. Errors carry the server's status code so the
- * caller can tell a full context window (413) from an ordinary failure.
+ * The conversation is identified by `chatId`, not replayed in the body: the
+ * server reads that chat's turns and appends this one. Sending the transcript as
+ * well is refused by the API — two sources for the same history is how a client
+ * ends up believing in a conversation the model never saw.
+ *
+ * The response's `saved` flag says whether the turn reached the store. False
+ * means the answer is correct but was not kept, which the caller should surface:
+ * it looks identical on screen until a reload, when the turn is simply missing.
+ *
+ * Errors carry the server's status code so the caller can tell a full context
+ * window (413) from an ordinary failure.
  *
  * Aborting `signal` drops the connection, which closes the server's event
  * generator and cancels the LM Studio request behind it — so stopping actually
@@ -222,17 +282,16 @@ export function subscribeToActivity(onEvent, onError) {
  * `AbortError`, which callers should treat as a cancellation, not a failure.
  *
  * @param {string} question
- * @param {Array<{question: string, sql: string, answer: string, table_names: string[]}>} history
- * @param {{ onStages?, onStage?, onToken?, onUsage?, signal?: AbortSignal }} handlers
+ * @param {{ chatId: string, onStages?, onStage?, onToken?, onUsage?, signal?: AbortSignal }} handlers
  * @returns {Promise<object>} the final QueryResponse
  */
-export async function submitQueryStream(question, history = [], handlers = {}) {
-  const { onStages, onStage, onToken, onUsage, signal } = handlers;
+export async function submitQueryStream(question, handlers = {}) {
+  const { chatId, onStages, onStage, onToken, onUsage, signal } = handlers;
 
   const response = await fetch(`${API_BASE_URL}/api/query/stream`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-    body: JSON.stringify({ question, history }),
+    body: JSON.stringify({ question, chat_id: chatId }),
     signal,
   });
 

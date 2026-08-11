@@ -1,5 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { submitQueryStream } from "./api";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import ChatTurn from "./ChatTurn";
 
 const SUGGESTIONS = [
@@ -32,162 +31,52 @@ function rememberedLabel(count) {
   return `${count} سؤالًا محفوظًا`;
 }
 
-let nextTurnId = 1;
-
-function newTurn(question) {
-  return {
-    id: nextTurnId++,
-    question,
-    stages: [],
-    progress: {}, // stage id -> { status, detail, content, startedAt, durationMs }
-    streamed: {}, // stage id -> partial LLM output
-    result: null,
-    error: null,
-    status: "running",
-    elapsedMs: undefined,
-  };
-}
-
-/** The turns the model gets to see, in the shape the API expects. */
-function toHistory(turns) {
-  return turns
-    .filter((turn) => turn.status === "done" && turn.result)
-    .map((turn) => ({
-      question: turn.question,
-      sql: turn.result.sql,
-      answer: turn.result.answer,
-      table_names: turn.result.retrieved_tables.map((table) => table.table_name),
-    }));
-}
-
 /**
- * The chat transcript.
+ * The transcript of one conversation.
  *
- * The backend keeps no session state, so this component owns the conversation:
- * every question is sent with the exchanges before it, and the model's memory
- * is exactly what is on screen. Result rows are left out of that replay — the
- * answer text already says what they showed, and one large result would crowd
- * out the entire rest of the window.
+ * This component no longer owns the conversation — useChats does, because with
+ * several chats the one on screen and the one being streamed into are not the
+ * same thing. Everything here is a function of the `session` prop, which means
+ * switching chats mid-answer swaps what is drawn without touching what is
+ * running.
  *
- * When the window fills the conversation stops rather than silently dropping
- * its oldest turns, so what the model can see is never less than what the user
- * can see.
+ * The memory meter reads THIS chat's window. Each conversation is measured
+ * against the model's context separately, so a chat that has filled up says so
+ * without implying anything about the others.
  *
- * The SQL and the tables each turn used are still carried in `result` and still
- * replayed to the model as history — they are simply never drawn. See ChatTurn.
+ * Result rows are left out of what the model is replayed — the answer text
+ * already says what they showed, and one large result would crowd out the entire
+ * rest of the window. When a chat's window fills, the conversation stops rather
+ * than silently dropping its oldest turns, so what the model can see is never
+ * less than what the user can see.
  */
-export default function ChatPanel() {
-  const [turns, setTurns] = useState([]);
-  const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [usage, setUsage] = useState(null); // { used_tokens, limit_tokens, history_turns }
-  const [full, setFull] = useState(false);
-
+export default function ChatPanel({
+  chatId,
+  session,
+  busy,
+  onAsk,
+  onStop,
+  onDraftChange,
+  onNewChat,
+}) {
   const scrollerRef = useRef(null);
   const composerRef = useRef(null);
   const following = useRef(true);
-  const abortRef = useRef(null);
 
-  /** Patch the turn currently being streamed (always the last one). */
-  function updateActiveTurn(patch) {
-    setTurns((prev) => {
-      if (prev.length === 0) return prev;
-      const active = prev[prev.length - 1];
-      return [...prev.slice(0, -1), { ...active, ...patch(active) }];
-    });
-  }
+  const turns = session?.turns ?? [];
+  const draft = session?.draft ?? "";
+  const usage = session?.usage ?? null;
+  const full = session?.full ?? false;
 
-  function handleStage({ stage, status, detail, content }) {
-    updateActiveTurn((turn) => {
-      const previous = turn.progress[stage];
-      const next =
-        status === "started"
-          ? { status: "active", startedAt: performance.now() }
-          : {
-              status: "done",
-              detail,
-              content,
-              durationMs:
-                previous?.startedAt === undefined
-                  ? undefined
-                  : performance.now() - previous.startedAt,
-            };
-      return { progress: { ...turn.progress, [stage]: next } };
-    });
-  }
-
-  function startNewChat() {
-    setTurns([]);
-    setUsage(null);
-    setFull(false);
-    setDraft("");
-    composerRef.current?.focus();
-  }
-
-  /** Drop the connection, which also cancels the model call behind it. */
-  function stopGenerating() {
-    abortRef.current?.abort();
-  }
-
-  async function ask(question) {
-    setBusy(true);
-    setDraft("");
-    const history = toHistory(turns);
-    setTurns((prev) => [...prev, newTurn(question)]);
+  function submit(question) {
     following.current = true;
-    const startedAt = performance.now();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      const result = await submitQueryStream(question, history, {
-        signal: controller.signal,
-        onStages: (stages) => updateActiveTurn(() => ({ stages })),
-        onStage: handleStage,
-        // Arrives mid-run, so the meter is right even if the turn then fails.
-        onUsage: setUsage,
-        onToken: ({ stage, text }) =>
-          updateActiveTurn((turn) => ({
-            streamed: { ...turn.streamed, [stage]: (turn.streamed[stage] ?? "") + text },
-          })),
-      });
-      setUsage(result.usage);
-      updateActiveTurn(() => ({
-        result,
-        status: "done",
-        elapsedMs: performance.now() - startedAt,
-      }));
-    } catch (err) {
-      // A cancellation is not a failure: whatever the model wrote before the
-      // stop is kept and shown, it just never becomes a finished turn.
-      const cancelled = err.name === "AbortError";
-
-      // 413 is the context cutoff: the question was never run, and no further
-      // question can be until the conversation is reset.
-      if (err.status === 413) setFull(true);
-
-      updateActiveTurn((turn) => ({
-        error: cancelled ? null : err.message,
-        status: cancelled ? "cancelled" : "error",
-        elapsedMs: performance.now() - startedAt,
-        // Whichever stage was in flight is the one that stopped.
-        progress: Object.fromEntries(
-          Object.entries(turn.progress).map(([id, stage]) =>
-            stage.status === "active" ? [id, { ...stage, status: "failed" }] : [id, stage],
-          ),
-        ),
-      }));
-    } finally {
-      abortRef.current = null;
-      setBusy(false);
-      composerRef.current?.focus();
-    }
+    onAsk(question);
   }
 
   function handleSubmit(event) {
     event.preventDefault();
     const question = draft.trim();
-    if (question && !busy && !full) ask(question);
+    if (question && !busy && !full) submit(question);
   }
 
   function handleKeyDown(event) {
@@ -208,31 +97,37 @@ export default function ChatPanel() {
   }, [draft]);
 
   // Esc stops generating from anywhere on the page, not just the composer —
-  // the answer is what you are watching when you decide to stop it.
+  // the answer is what you are watching when you decide to stop it. It stops the
+  // VISIBLE chat only; another chat still working is not what Esc was aimed at.
   useEffect(() => {
     if (!busy) return undefined;
 
     function onKeyDown(event) {
       if (event.key === "Escape") {
         event.preventDefault();
-        stopGenerating();
+        onStop();
       }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [busy]);
-
-  // Abandoning the page mid-run should free the model too.
-  useEffect(() => () => abortRef.current?.abort(), []);
+  }, [busy, onStop]);
 
   // Keep the newest output in view, unless the reader has scrolled away from it.
+  // Re-runs on chatId too, so switching to a chat lands at its newest turn.
   useEffect(() => {
     const scroller = scrollerRef.current;
     if (scroller && following.current) {
       scroller.scrollTop = scroller.scrollHeight;
     }
-  }, [turns]);
+  }, [turns, chatId]);
+
+  // A different conversation is a different reading position: assume the newest
+  // turn is wanted until this chat is scrolled away from in its own right.
+  useEffect(() => {
+    following.current = true;
+    composerRef.current?.focus();
+  }, [chatId]);
 
   function handleScroll(event) {
     const { scrollTop, scrollHeight, clientHeight } = event.currentTarget;
@@ -240,6 +135,25 @@ export default function ChatPanel() {
   }
 
   const fraction = usage ? Math.min(1, usage.used_tokens / usage.limit_tokens) : 0;
+  // A turn that was answered but not stored. The answer is on screen and correct;
+  // it will not be there after a reload, and only saying so at the time gives the
+  // user the chance to copy it.
+  const unsaved = turns.some((turn) => turn.status === "done" && turn.saved === false);
+
+  if (!session) {
+    return (
+      <div className="chat">
+        <div className="chat-scroller">
+          <div className="chat-column">
+            <div className="chat-empty">
+              <h2>لا توجد محادثة مفتوحة</h2>
+              <p>ابدأ محادثة جديدة من القائمة.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="chat">
@@ -250,7 +164,7 @@ export default function ChatPanel() {
           className="meter"
           title={
             usage
-              ? `استُهلك ${Math.round(fraction * 100)}٪ من ذاكرة المحادثة`
+              ? `استُهلك ${Math.round(fraction * 100)}٪ من ذاكرة هذه المحادثة`
               : "يُقاس بعد إرسال أول سؤال"
           }
         >
@@ -262,31 +176,29 @@ export default function ChatPanel() {
           </div>
           <span className="meter-label">
             {usage
-              ? `${Math.round(fraction * 100)}٪ من الذاكرة · ${rememberedLabel(
+              ? `${Math.round(fraction * 100)}٪ من ذاكرة المحادثة · ${rememberedLabel(
                   usage.history_turns,
                 )}`
               : "الذاكرة — لم تُقَس بعد"}
           </span>
         </div>
-        <button
-          type="button"
-          className="new-chat"
-          onClick={startNewChat}
-          disabled={turns.length === 0}
-        >
-          محادثة جديدة
-        </button>
       </header>
 
       <div className="chat-scroller" ref={scrollerRef} onScroll={handleScroll}>
         <div className="chat-column">
+          {session.loadError && (
+            <div className="error" dir="auto">
+              تعذّر تحميل هذه المحادثة: {session.loadError}
+            </div>
+          )}
+
           {turns.length === 0 ? (
             <div className="chat-empty">
               <h2>اسأل عن قاعدة بيانات القضايا</h2>
               <p>
                 اطرح سؤالك بالعربية وستحصل على إجابة مبنية على بيانات المحاكم. يمكنك
-                المتابعة بأسئلة إضافية — النظام يتذكّر هذه المحادثة — إلى أن تمتلئ
-                الذاكرة، وعندها تبدأ محادثة جديدة.
+                المتابعة بأسئلة إضافية — لكل محادثة ذاكرتها الخاصة — إلى أن تمتلئ
+                ذاكرتها، وعندها تبدأ محادثة جديدة.
               </p>
               <div className="suggestions">
                 {SUGGESTIONS.map((suggestion) => (
@@ -295,7 +207,7 @@ export default function ChatPanel() {
                     type="button"
                     className="suggestion-chip"
                     dir="auto"
-                    onClick={() => ask(suggestion)}
+                    onClick={() => submit(suggestion)}
                   >
                     {suggestion}
                   </button>
@@ -303,19 +215,28 @@ export default function ChatPanel() {
               </div>
             </div>
           ) : (
-            turns.map((turn) => <ChatTurn key={turn.id} turn={turn} />)
+            turns.map((turn) => <ChatTurn key={turn.key} turn={turn} />)
           )}
         </div>
       </div>
 
       <div className="composer-area">
+        {unsaved && (
+          <div className="context-full context-warn">
+            <span>
+              تعذّر حفظ إحدى الإجابات في هذه المحادثة. الإجابة صحيحة لكنها لن تظهر
+              بعد إعادة تحميل الصفحة — انسخها إن كنت بحاجة إليها.
+            </span>
+          </div>
+        )}
+
         {full && (
           <div className="context-full">
             <span>
               امتلأت ذاكرة هذه المحادثة. لم يُحذف أي سؤال سابق — ابدأ محادثة جديدة
-              للمتابعة.
+              للمتابعة. المحادثات الأخرى غير متأثرة.
             </span>
-            <button type="button" onClick={startNewChat}>
+            <button type="button" onClick={onNewChat}>
               محادثة جديدة
             </button>
           </div>
@@ -338,14 +259,14 @@ export default function ChatPanel() {
                 ? "ابدأ محادثة جديدة للمتابعة"
                 : "اسأل عن القضايا أو القضاة أو الجلسات أو الأحكام…"
             }
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => onDraftChange(event.target.value)}
             onKeyDown={handleKeyDown}
           />
           {busy ? (
             <button
               type="button"
               className="stop"
-              onClick={stopGenerating}
+              onClick={onStop}
               aria-label="إيقاف"
               title="إيقاف (Esc)"
             >
@@ -360,7 +281,7 @@ export default function ChatPanel() {
         <p className="composer-hint">
           {busy
             ? "اضغط Esc أو زر الإيقاف للإلغاء"
-            : "Enter للإرسال · Shift+Enter لسطر جديد · النظام يتذكّر هذه المحادثة"}
+            : "Enter للإرسال · Shift+Enter لسطر جديد · لكل محادثة ذاكرتها الخاصة"}
         </p>
       </div>
     </div>

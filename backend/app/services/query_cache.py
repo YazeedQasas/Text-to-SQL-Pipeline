@@ -26,9 +26,9 @@ that CDC has since re-documented can never serve its old description from here.
 
 MATCHING IS LEXICAL, NOT SEMANTIC
 ---------------------------------
-The key is a hash of the question after arabic.normalize (diacritics dropped,
-hamza forms folded, the definite article removed) and arabic.words (punctuation
-dropped). Nothing is matched by meaning.
+The key is a hash of the question after arabic.normalize_key (diacritics and
+tatweel dropped, hamza carriers folded, the definite article removed) and
+arabic.words (punctuation dropped). Nothing is matched by meaning.
 
 That is a deliberate first step, not an oversight. A semantic layer cannot skip
 the embedding — it needs the vector to do the lookup — so it can only ever save
@@ -36,8 +36,21 @@ the generation call, and it introduces a failure this layer cannot have: the
 tokens that decide a SQL query are exactly the ones an embedding compresses
 away. "قضايا 2023" and "قضايا 2024" sit a hair apart in vector space and need
 completely different queries, and a wrong query runs cleanly and reports a
-confident number for a question nobody asked. Whether that risk is worth taking
-is a question for the hit-rate figures this module records, not for a guess.
+confident number for a question nobody asked.
+
+LEXICAL KEYING HAS THE SAME FAILURE, IN A DIFFERENT PLACE
+---------------------------------------------------------
+The paragraph above used to stop there, and it was only half the story. An
+embedding erases the distinguishing token by compressing it; an over-eager
+normalizer erases it by folding it. Same bug, same consequence — two different
+questions treated as one — just moved from vector space into string handling.
+
+This module hit it: arabic.normalize folds ى→ي and ة→ه, which put "من هو
+المدعي؟" (who is the plaintiff) and "من هو المدعى؟" (who is the sued) on one
+key. That is why cache_key now calls arabic.normalize_key instead, and why any
+future widening of the key normalizer has to be argued against this paragraph
+first. The rule that falls out of it: a key may fold what cannot change meaning,
+and nothing else. Recall is search's problem, not the key's.
 
 KEYSPACE
 --------
@@ -163,12 +176,18 @@ async def close() -> None:
 def cache_key(question: str) -> str:
     """The lookup key for a question, or "" if it has no content words.
 
-    normalize() folds spelling but leaves punctuation attached — ؟ is U+061F,
+    Uses arabic.normalize_key, NOT arabic.normalize. The soft normalizer folds
+    ى→ي and ة→ه, which merged "من هو المدعي؟" (plaintiff) with "من هو المدعى؟"
+    (the sued) onto one key — measured, not hypothetical. A key is the thing
+    that decides which stored SQL runs, so it folds only what cannot change
+    meaning. See normalize_key's docstring for the full trade.
+
+    normalize_key folds spelling but leaves punctuation attached — ؟ is U+061F,
     inside the Arabic block — so words() has to run after it to drop the
     question mark. Doing only one of the two leaves "…المدورة؟" and "…المدورة"
     as different keys, which is the exact case this cache exists for.
     """
-    tokens = arabic.words(arabic.normalize(question))
+    tokens = arabic.words(arabic.normalize_key(question))
     if not tokens:
         return ""
     return hashlib.sha256(" ".join(tokens).encode("utf-8")).hexdigest()

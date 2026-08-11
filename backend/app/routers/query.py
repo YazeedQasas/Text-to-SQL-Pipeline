@@ -13,12 +13,24 @@ from app.services.pipeline import (
     StageEvent,
     TokenEvent,
     UsageEvent,
+    run_chat_turn,
     run_pipeline,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["query"])
+
+
+def _events(request: QueryRequest):
+    """Pick the persistent or the stateless path.
+
+    QueryRequest guarantees these are mutually exclusive, so this is a choice
+    between two sources of history rather than a merge of them.
+    """
+    if request.chat_id is not None:
+        return run_chat_turn(request.chat_id, request.question)
+    return run_pipeline(request.question, request.history)
 
 
 @router.post("/query", response_model=QueryResponse)
@@ -29,7 +41,7 @@ async def run_query(request: QueryRequest) -> QueryResponse:
     progress while the pipeline runs.
     """
     try:
-        async for event in run_pipeline(request.question, request.history):
+        async for event in _events(request):
             if isinstance(event, QueryResponse):
                 return event
     except PipelineError as exc:
@@ -65,7 +77,7 @@ async def run_query_stream(request: QueryRequest) -> StreamingResponse:
     async def event_stream() -> AsyncIterator[str]:
         yield _sse({"type": "stages", "stages": STAGES})
         try:
-            async for event in run_pipeline(request.question, request.history):
+            async for event in _events(request):
                 if isinstance(event, StageEvent):
                     yield _sse(
                         {

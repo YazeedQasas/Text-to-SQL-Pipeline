@@ -455,26 +455,58 @@ def _prior_turn(question="كم عدد القضايا؟"):
     return [_history(question=question, sql="SELECT case_id FROM cases", answer="One.")]
 
 
-def test_a_question_asked_later_in_a_chat_can_still_be_reused(cached_pipeline):
-    """Reads are allowed on any turn.
+def test_a_follow_up_does_not_reuse_a_cached_query_by_default(cached_pipeline):
+    """QUERY_CACHE_FOLLOW_UPS defaults FALSE, so a chat with prior turns re-derives.
 
-    A session is one long chat holding many unrelated self-contained questions.
-    Restricting reads to first turns would cost nearly every real hit.
+    This test used to assert the opposite. The justification for allowing reads on
+    any turn was that everything stored is "context-free by construction" — but
+    writing is gated on the turn's POSITION, not the question's CONTENT, so an
+    anaphoric question asked as a first turn does reach the cache. The key is the
+    question alone, with no chat id and no history in it, so a permissive read
+    lets one conversation run SQL built for another's cold opening.
+
+    Two generation calls is the cost being paid for that, and it is most of the
+    hit rate. See config.QUERY_CACHE_FOLLOW_UPS.
     """
+    _events("كم عدد القضايا؟")
+    _events("كم عدد القضايا؟", history=_prior_turn("سؤال آخر تمامًا"))
+
+    assert cached_pipeline["sql_calls"] == 2
+
+
+def test_follow_up_reuse_can_be_opted_into(cached_pipeline, monkeypatch):
+    """The hit rate is available to a deployment that accepts the trade."""
+    monkeypatch.setattr(pipeline, "QUERY_CACHE_FOLLOW_UPS", True)
+
     _events("كم عدد القضايا؟")
     _events("كم عدد القضايا؟", history=_prior_turn("سؤال آخر تمامًا"))
 
     assert cached_pipeline["sql_calls"] == 1
 
 
-def test_strict_mode_refuses_to_reuse_on_a_follow_up(cached_pipeline, monkeypatch):
-    """The escape hatch, for a deployment that will not accept the residual risk."""
-    monkeypatch.setattr(pipeline, "QUERY_CACHE_FOLLOW_UPS", False)
-
+def test_a_first_turn_still_reuses_whatever_the_follow_up_setting(cached_pipeline):
+    """The gate is `FOLLOW_UPS or not has_prior_turns` — a cold ask always reads."""
     _events("كم عدد القضايا؟")
-    _events("كم عدد القضايا؟", history=_prior_turn("سؤال آخر تمامًا"))
+    _events("كم عدد القضايا؟")
 
-    assert cached_pipeline["sql_calls"] == 2
+    assert cached_pipeline["sql_calls"] == 1
+
+
+def test_a_non_positive_turn_cap_does_not_reopen_the_write_guard(
+    cached_pipeline, monkeypatch
+):
+    """CONTEXT_MAX_TURNS <= 0 must not turn "first turns only" into "store everything".
+
+    trim_history returns [] for any non-positive cap, so a follow-up used to
+    arrive at the write guard looking like a first turn. run_pipeline now decides
+    from the untrimmed input, so a context knob can no longer reach cache policy.
+    """
+    monkeypatch.setattr(context, "CONTEXT_MAX_TURNS", 0)
+
+    # A follow-up whose wording depends on the turn before it.
+    _events("وكم منها مفتوحة؟", history=_prior_turn())
+
+    assert asyncio.run(query_cache.stats())["entries"] == 0
 
 
 def test_a_follow_up_answer_is_never_written_to_the_cache(cached_pipeline):
