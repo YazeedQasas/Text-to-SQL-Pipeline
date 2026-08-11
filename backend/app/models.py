@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class HistoryTurn(BaseModel):
@@ -20,12 +20,39 @@ class HistoryTurn(BaseModel):
 
 
 class QueryRequest(BaseModel):
+    """A question, and where its conversation comes from.
+
+    There are two ways to supply that conversation, and exactly one may be used
+    per request:
+
+      `chat_id`  — the turns are read from the store, and this turn is appended
+                   to it. The persistent path, and what the UI uses.
+      `history`  — the turns are supplied in the body and nothing is saved. The
+                   original stateless path, kept for one-off and scripted calls
+                   that have no chat behind them.
+
+    Sending both is rejected rather than resolved by precedence. Whichever one
+    lost would be silently ignored, which is how a client ends up believing a
+    conversation the model was never shown.
+    """
+
     question: str = Field(..., min_length=1, max_length=2000, description="Natural-language question from the user.")
-    # The backend holds no session state; the transcript lives in the browser
-    # and is replayed here. This cap only bounds the request body — the token
-    # budget in services/context.py is what actually decides how much history
-    # the model is given, and it binds first.
+    # A stored conversation (db/07_app_schema.sql). Each chat's context window is
+    # measured from its own turns, so two chats can never share a budget.
+    chat_id: str | None = Field(None, min_length=36, max_length=36)
+    # The stateless alternative: the transcript replayed in the request body.
+    # This cap only bounds the body — the token budget in services/context.py is
+    # what decides how much history the model is given, and it binds first.
     history: list[HistoryTurn] = Field(default_factory=list, max_length=1000)
+
+    @model_validator(mode="after")
+    def _single_source_of_history(self) -> "QueryRequest":
+        if self.chat_id is not None and self.history:
+            raise ValueError(
+                "Send either chat_id or history, not both: the stored conversation and "
+                "the one in this body would disagree, and only one can reach the model."
+            )
+        return self
 
 
 class RetrievedTable(BaseModel):
@@ -49,6 +76,79 @@ class QueryResponse(BaseModel):
     rows: list[dict]
     retrieved_tables: list[RetrievedTable]
     usage: ContextUsage
+    # Whether this turn reached the store. False on the stateless path, which has
+    # no chat to save to, and false when the write failed — a MySQL blip, or a
+    # chat deleted while the answer was being written.
+    #
+    # Reported rather than swallowed because the failure is invisible otherwise:
+    # the answer is on screen, so the conversation looks intact until a reload
+    # shows the turn was never there. The client can say so at the time.
+    saved: bool = False
+
+
+# --- Chats --------------------------------------------------------------------
+
+
+class ChatModel(BaseModel):
+    """One conversation, as the sidebar sees it.
+
+    No context-window figure here. How full a chat is depends on the schema
+    retrieved for its next question, so it is a property of a request rather
+    than of the chat — `ContextUsage` reports it per turn.
+    """
+
+    id: str
+    # NULL until the first turn names it. The client shows a placeholder rather
+    # than inventing a title, so an empty chat never looks like a titled one.
+    title: str | None = None
+    created_at: float
+    updated_at: float
+    turn_count: int = 0
+
+
+class ChatListResponse(BaseModel):
+    chats: list[ChatModel]
+
+
+class CreateChatRequest(BaseModel):
+    """`id` is optional and client-generated when present.
+
+    The browser can mint a UUID, key its local state on it and start streaming
+    without waiting for this call to come back. Sending an id that already exists
+    returns that chat unchanged rather than erroring, so a retry after a dropped
+    connection is safe.
+    """
+
+    id: str | None = Field(None, min_length=36, max_length=36)
+
+
+class RenameChatRequest(BaseModel):
+    title: str = Field(..., min_length=1, max_length=120)
+
+
+class ChatTurnModel(BaseModel):
+    """A stored turn, as the transcript is redrawn from it.
+
+    Wider than HistoryTurn by exactly one field — the row id — because the client
+    needs a stable React key. Result rows are absent for the same reason they are
+    absent from HistoryTurn, which has a visible consequence: reopening a chat
+    shows every answer but no result tables. The answer text carries what the
+    rows said.
+    """
+
+    id: int
+    question: str
+    sql: str = ""
+    answer: str = ""
+    table_names: list[str] = Field(default_factory=list)
+    created_at: float
+
+
+class ChatDetailResponse(BaseModel):
+    """A chat and its transcript, so opening one costs a single round trip."""
+
+    chat: ChatModel
+    turns: list[ChatTurnModel]
 
 
 # --- Schema catalog review ----------------------------------------------------

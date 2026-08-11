@@ -13,7 +13,8 @@ from dataclasses import dataclass
 
 from app.config import QUERY_CACHE_ENABLED, QUERY_CACHE_FOLLOW_UPS
 from app.models import ContextUsage, HistoryTurn, QueryResponse, RetrievedTable
-from app.services import arabic, context, llm, query_cache
+from app.services import arabic, chat_store, context, llm, query_cache
+from app.services.chat_store import ChatNotFound
 from app.services.db import execute_select
 from app.services.embeddings import embed_texts
 from app.services.retrieval import (
@@ -257,31 +258,107 @@ async def _execute_and_answer(
     )
 
 
+async def run_chat_turn(chat_id: str, question: str) -> AsyncIterator[PipelineEvent]:
+    """Run a question inside a stored conversation.
+
+    This is the whole of what "each chat has its own context window" means in
+    code: the history is read from THIS chat, so the budget measured in
+    run_pipeline is measured over this chat's turns and no others. Nothing about
+    the pipeline itself changed to make that true — it is a consequence of what
+    it is handed, which is why run_pipeline below stays stateless and unaware
+    that chats exist.
+
+    The turn is appended BEFORE the result is yielded, so `saved` on the response
+    is a fact rather than a promise. A write failure is logged and the answer is
+    still delivered — the user asked a question and it was answered correctly,
+    and throwing that away because a row could not be written would be a worse
+    outcome than telling them it was not kept.
+    """
+    stored = await chat_store.load_history(chat_id)
+    history = [
+        HistoryTurn(
+            question=turn["question"],
+            sql=turn["sql"],
+            answer=turn["answer"],
+            table_names=turn["table_names"],
+        )
+        for turn in stored
+    ]
+
+    async for event in run_pipeline(question, history):
+        if not isinstance(event, QueryResponse):
+            yield event
+            continue
+
+        saved = False
+        try:
+            await chat_store.append_turn(
+                chat_id,
+                question,
+                event.sql,
+                event.answer,
+                [table.table_name for table in event.retrieved_tables],
+            )
+            saved = True
+        except ChatNotFound:
+            # The chat was deleted while this answer was being written — routine
+            # once chats stream concurrently. Not an error worth a stack trace.
+            logger.info("Chat %s was deleted before its turn could be saved", chat_id)
+        except Exception:  # noqa: BLE001 — a failed save must not lose a good answer
+            logger.exception("Could not save a turn to chat %s", chat_id)
+
+        yield event.model_copy(update={"saved": saved})
+
+
 async def run_pipeline(
     question: str, history: list[HistoryTurn] | None = None
 ) -> AsyncIterator[PipelineEvent]:
-    # The browser replays the transcript; the backend keeps no session state.
-    history = context.trim_history(list(history or []))
+    """Answer a question against a transcript, holding no state of its own.
 
-    # Reading and writing the cache are governed by DIFFERENT rules, and the
-    # asymmetry is the whole design.
+    Callers supply the history: run_chat_turn reads it from a stored chat, while
+    /api/query can be handed one in the request body. Which chat — or whether
+    there is a chat at all — is deliberately invisible here.
+    """
+    supplied = list(history or [])
+
+    # Cache policy is decided from what the CALLER supplied, before trimming —
+    # never from `history` below.
     #
-    # WRITING is first-turn-only (see the `store=` argument further down), so
-    # every entry is context-free by construction: it can only have come from
-    # someone asking cold, with nothing before it to lean on.
+    # The coupling this avoids was real: context.trim_history returns [] for any
+    # CONTEXT_MAX_TURNS <= 0, so a chat with a hundred stored turns arrived here
+    # looking like a first turn. `not history` then read True, and a value that
+    # presents itself as a context knob — and that reads like "unlimited" —
+    # silently switched the cache's write guard to store-everything, putting
+    # context-dependent queries where a later unrelated chat could pick them up.
     #
-    # READING is allowed on any turn, because that invariant is what makes it
-    # safe. A truly anaphoric question — "وكم في غزة؟" — is never in the cache
-    # to begin with, since nobody opens a conversation with it. Restricting
-    # reads to first turns as well would be stricter than the data requires and
-    # would cost nearly every real hit: a session is one long chat holding many
-    # unrelated self-contained questions, not a fresh chat per question.
+    # Deriving both cache decisions from the untrimmed input decouples them, so
+    # CONTEXT_MAX_TURNS can only ever affect what the MODEL sees.
+    has_prior_turns = bool(supplied)
+    history = context.trim_history(supplied)
+
+    # Reading and writing the cache are governed by DIFFERENT rules.
     #
-    # What survives is the case where identical words mean something narrower
-    # deep in a conversation than they did cold. QUERY_CACHE_FOLLOW_UPS=false
-    # is the escape hatch; the answer is regenerated with the full history
-    # either way, so the model still sees the conversation it is answering in.
-    if QUERY_CACHE_ENABLED and (QUERY_CACHE_FOLLOW_UPS or not history):
+    # WRITING is first-turn-only (see the `store=` argument further down). Note
+    # what that does and does not guarantee: it guarantees the entry was written
+    # by someone asking with no prior turns, which is NOT the same as the entry
+    # being context-free. Nothing inspects the question, so opening a fresh chat
+    # with "وكم منها مفتوحة؟" writes an anaphoric query to a cache every other
+    # chat can read. This was verified reachable, and it is why the read rule
+    # below no longer defaults to permissive.
+    #
+    # READING is now first-turn-only as well by default (QUERY_CACHE_FOLLOW_UPS
+    # defaults false, see config.py). The lookup takes the question and nothing
+    # else — no chat id, no history — so a chat deep in a conversation asking
+    # words that match an entry gets that entry's SQL regardless of what its own
+    # conversation was about. Blocking reads whenever there are prior turns is
+    # blunt, and it costs most of the hit rate, but it is the only rule here that
+    # does not depend on an assumption about how people phrase first questions.
+    #
+    # Set QUERY_CACHE_FOLLOW_UPS=true to restore reads on later turns. That is a
+    # hit-rate-for-correctness trade, and the correctness being traded is
+    # specifically: a question whose words match cold-start SQL built for a
+    # different conversation.
+    if QUERY_CACHE_ENABLED and (QUERY_CACHE_FOLLOW_UPS or not has_prior_turns):
         reused = await _reuse_cached_plan(question)
         if reused is not None:
             async for event in _answer_from_cache(question, history, *reused):
@@ -383,11 +460,13 @@ async def run_pipeline(
         glossary,
         history,
         concepts,
-        # First turns only, whatever the read rule allows. This is the invariant
-        # the read side depends on: an answer produced with a conversation
-        # behind it may mean something that its wording alone does not, and
-        # storing it would put a context-dependent query where a later,
+        # First turns only, whatever the read rule allows: an answer produced
+        # with a conversation behind it may mean something its wording alone does
+        # not, and storing it would put a context-dependent query where a later,
         # unrelated conversation could pick it up.
-        store=QUERY_CACHE_ENABLED and not history,
+        #
+        # `has_prior_turns`, not `not history` — the two differ whenever
+        # CONTEXT_MAX_TURNS <= 0, and the difference was a silent store-everything.
+        store=QUERY_CACHE_ENABLED and not has_prior_turns,
     ):
         yield event

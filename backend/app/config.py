@@ -27,6 +27,23 @@ MYSQL_USER = os.getenv("MYSQL_USER", "texttosql_ro")
 MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "")
 MYSQL_DATABASE = os.getenv("MYSQL_DATABASE", "legal_db")
 
+# --- MySQL (application state; see db/07_app_schema.sql) ---------------------
+# Chat transcripts. A SECOND account and a SEPARATE schema, both deliberate:
+#
+#   - MYSQL_USER above executes model-generated SQL and holds SELECT only, so it
+#     cannot be the account that writes here.
+#   - app_db sits outside Debezium's include list (which is MYSQL_DATABASE) and
+#     outside MYSQL_USER's grants, so the transcripts can be neither documented
+#     into Qdrant nor read back by a generated query.
+#
+# Same host and port as the pipeline's connection by default — it is one MySQL
+# instance — but never the same credentials or database.
+APP_MYSQL_HOST = os.getenv("APP_MYSQL_HOST", MYSQL_HOST)
+APP_MYSQL_PORT = int(os.getenv("APP_MYSQL_PORT", str(MYSQL_PORT)))
+APP_MYSQL_USER = os.getenv("APP_MYSQL_USER", "texttosql_app")
+APP_MYSQL_PASSWORD = os.getenv("APP_MYSQL_PASSWORD", "")
+APP_MYSQL_DATABASE = os.getenv("APP_MYSQL_DATABASE", "app_db")
+
 # --- Qdrant ------------------------------------------------------------------
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_API_KEY = os.getenv("QDRANT_API_KEY") or None
@@ -114,6 +131,17 @@ CONTEXT_OUTPUT_RESERVE_TOKENS = int(os.getenv("CONTEXT_OUTPUT_RESERVE_TOKENS", "
 # schema, so ~560 turns at a 50k window. Set it below that and it quietly drops
 # the oldest turns before the budget can stop cleanly, which is exactly the
 # behaviour this design exists to avoid.
+#
+# ZERO OR NEGATIVE MEANS NO MEMORY AT ALL, NOT "UNLIMITED".
+# context.trim_history returns [] for any value <= 0, so every turn reaches the
+# model as though it were the first and no conversation has any memory. It reads
+# like an "off switch" for a cap and is really an off switch for the feature.
+#
+# It used to be worse than that: the cache's write guard read the TRIMMED list,
+# so <= 0 also silently turned "store first turns only" into "store everything",
+# including anaphoric queries. pipeline.run_pipeline now decides cache policy
+# from the untrimmed input, so this value can no longer reach the cache at all.
+# Keep it that way — cache policy must not depend on a context knob.
 CONTEXT_MAX_TURNS = int(os.getenv("CONTEXT_MAX_TURNS", "1000"))
 # Extra schema tables carried over from the previous turn, on top of
 # RETRIEVAL_TOP_K. A follow-up ("and who was the judge?") retrieves nothing
@@ -142,23 +170,29 @@ SQL_STATEMENT_TIMEOUT_SECONDS = int(os.getenv("SQL_STATEMENT_TIMEOUT_SECONDS", "
 # this feature existed. Nothing here is worth failing a good answer over.
 QUERY_CACHE_ENABLED = os.getenv("QUERY_CACHE_ENABLED", "true").lower() == "true"
 # Whether a question asked partway through a conversation may be answered from
-# the cache. Entries are ALWAYS written from first turns only, so everything in
-# the cache is context-free by construction — it got there from someone asking
-# cold, with no conversation to lean on. Reading on later turns is what makes
-# the feature useful at all: real sessions are one long chat containing many
-# unrelated self-contained questions, and requiring a fresh chat per hit means
-# the cache almost never fires.
+# the cache. DEFAULTS FALSE, and the default was changed after tracing the read
+# path rather than reasoning about it.
 #
-# The rule is also self-limiting. A genuinely anaphoric question ("وكم في غزة؟")
-# can never be IN the cache, because nobody asks it as a first turn, so it can
-# never be served from it.
+# The old default was true, justified like this: entries are written from first
+# turns only, so the cache is "context-free by construction", so reading on any
+# turn is safe. The middle step does not hold. Writing is gated on the turn's
+# POSITION — no prior turns — and nothing anywhere inspects the question's
+# CONTENT. Opening a fresh chat and asking "وكم منها مفتوحة؟" writes an
+# anaphoric query to the cache; verified reachable, not hypothetical. Multi-chat
+# made it likelier still, because starting a new chat is now one click.
 #
-# The residual risk is real, not theoretical: the same words can mean something
-# narrower deep in a conversation ("كم عدد القضايا؟" after five turns about
-# Gaza) than they did cold. The answer is still written with the full history in
-# the prompt, and the SQL is shown in the UI, but neither is a guarantee. Set
-# this false for the strict first-turn-only behaviour.
-QUERY_CACHE_FOLLOW_UPS = os.getenv("QUERY_CACHE_FOLLOW_UPS", "true").lower() == "true"
+# The lookup key is the question and nothing else — no chat id, no history — so
+# with follow-up reads enabled, a chat five turns into one subject can be served
+# SQL built for a different chat's cold opening. The answer is regenerated with
+# the right history in the prompt, so it reads plausibly; the QUERY was chosen
+# outside that context.
+#
+# Set true to restore reads on later turns. It buys back most of the hit rate —
+# a real session is one long chat holding many unrelated self-contained
+# questions, and first-turn-only means the cache rarely fires — at the cost
+# named above. That is a deployment decision, so it stays configurable, but it
+# is no longer the default.
+QUERY_CACHE_FOLLOW_UPS = os.getenv("QUERY_CACHE_FOLLOW_UPS", "false").lower() == "true"
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 # Namespaces every key this feature owns, so `clear()` can find exactly its own
 # keys and a Redis shared with anything else is never touched.

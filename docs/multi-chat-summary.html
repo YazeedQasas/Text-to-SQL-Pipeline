@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Multi-chat history — what shipped</title>
+<style>
+  :root {
+    --ground: #f4f6f8;
+    --surface: #ffffff;
+    --surface-sunk: #eef1f5;
+    --line: #d9dee6;
+    --line-soft: #e7ebf0;
+    --ink: #14181f;
+    --ink-body: #2b323d;
+    --ink-muted: #5a6472;
+    --ink-faint: #838d9b;
+
+    --durable: #2f5fa8;
+    --durable-tint: #e8eef8;
+    --durable-line: #b9cbe6;
+
+    --cache: #b4531f;
+    --cache-tint: #fbeee5;
+    --cache-line: #e8c4a6;
+
+    --alert: #a8271b;
+    --alert-tint: #fdeceb;
+    --alert-line: #eebfbb;
+    --ok: #1d6b4a;
+    --ok-tint: #e7f3ed;
+    --ok-line: #b5d8c6;
+
+    --serif: Georgia, "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+    --s--1: 0.8125rem;
+    --s-0: 1.0625rem;
+    --s-1: 1.1875rem;
+    --s-2: 1.4375rem;
+    --s-3: 1.8125rem;
+    --s-4: 2.375rem;
+
+    --prose: 46rem;
+    --wide: 58rem;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #101318;
+      --surface: #171b22;
+      --surface-sunk: #1d222b;
+      --line: #2c333e;
+      --line-soft: #232932;
+      --ink: #eef1f5;
+      --ink-body: #ccd3dd;
+      --ink-muted: #97a1af;
+      --ink-faint: #737d8b;
+      --durable: #7fa9e0;
+      --durable-tint: #1a2333;
+      --durable-line: #33456180;
+      --cache: #e0925f;
+      --cache-tint: #2a1e15;
+      --cache-line: #5c3a2380;
+      --alert: #f08b81;
+      --alert-tint: #2c1917;
+      --alert-line: #5e2f2b80;
+      --ok: #74c79c;
+      --ok-tint: #14241c;
+      --ok-line: #2c503f80;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #101318;
+    --surface: #171b22;
+    --surface-sunk: #1d222b;
+    --line: #2c333e;
+    --line-soft: #232932;
+    --ink: #eef1f5;
+    --ink-body: #ccd3dd;
+    --ink-muted: #97a1af;
+    --ink-faint: #737d8b;
+    --durable: #7fa9e0;
+    --durable-tint: #1a2333;
+    --durable-line: #33456180;
+    --cache: #e0925f;
+    --cache-tint: #2a1e15;
+    --cache-line: #5c3a2380;
+    --alert: #f08b81;
+    --alert-tint: #2c1917;
+    --alert-line: #5e2f2b80;
+    --ok: #74c79c;
+    --ok-tint: #14241c;
+    --ok-line: #2c503f80;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink-body);
+    font-family: var(--sans);
+    font-size: var(--s-0);
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page {
+    max-width: var(--wide);
+    margin: 0 auto;
+    padding: 3.5rem 1.5rem 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 3rem;
+  }
+
+  h1, h2 { font-family: var(--serif); color: var(--ink); text-wrap: balance; margin: 0; font-weight: 600; }
+  h1 { font-size: var(--s-4); line-height: 1.14; letter-spacing: -0.015em; }
+  h2 { font-size: var(--s-3); line-height: 1.2; letter-spacing: -0.01em; }
+  h3 { font-family: var(--sans); font-size: var(--s-1); font-weight: 650; color: var(--ink); margin: 0; letter-spacing: -0.005em; }
+  p { margin: 0; max-width: var(--prose); }
+  a { color: var(--durable); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+  a:focus-visible { outline: 2px solid var(--durable); outline-offset: 3px; border-radius: 2px; }
+
+  code {
+    font-family: var(--mono);
+    font-size: 0.875em;
+    background: var(--surface-sunk);
+    border: 1px solid var(--line-soft);
+    border-radius: 4px;
+    padding: 0.08em 0.32em;
+    overflow-wrap: break-word;
+  }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 0.7rem;
+    letter-spacing: 0.11em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0;
+  }
+
+  header.masthead { display: flex; flex-direction: column; gap: 1rem; }
+  .lede { font-size: var(--s-2); line-height: 1.4; color: var(--ink-muted); font-family: var(--serif); }
+  .meta {
+    display: flex; flex-wrap: wrap; gap: 0.35rem 1.4rem;
+    font-family: var(--mono); font-size: var(--s--1); color: var(--ink-faint);
+    padding-top: 1rem; border-top: 1px solid var(--line); max-width: none;
+  }
+  .meta b { color: var(--ink-muted); font-weight: 500; }
+
+  section { display: flex; flex-direction: column; gap: 1.25rem; }
+  .section-head { display: flex; flex-direction: column; gap: 0.35rem; }
+
+  /* Shipped pieces — a plain register, no decorative numbering: these are
+     parallel parts, not a sequence. */
+  .parts { display: grid; gap: 0.5rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); }
+  .part {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 5px;
+    padding: 0.75rem 0.9rem; display: flex; flex-direction: column; gap: 0.2rem;
+  }
+  .part code { background: none; border: none; padding: 0; color: var(--ink); font-size: 0.8125rem; }
+  .part span { font-size: var(--s--1); color: var(--ink-muted); line-height: 1.45; }
+
+  /* Tables */
+  .tw { width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; min-width: 38rem; font-size: var(--s--1); }
+  thead th {
+    text-align: start; padding: 0.75rem 1rem; border-bottom: 1px solid var(--line);
+    font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.09em;
+    text-transform: uppercase; color: var(--ink-faint); font-weight: 500;
+  }
+  tbody th {
+    text-align: start; font-weight: 500; color: var(--ink); padding: 0.7rem 1rem;
+    vertical-align: top; font-family: var(--sans); border-bottom: 1px solid var(--line-soft);
+  }
+  tbody td { padding: 0.7rem 1rem; vertical-align: top; border-bottom: 1px solid var(--line-soft); }
+  tbody tr:last-child th, tbody tr:last-child td { border-bottom: none; }
+  td.was { color: var(--alert); background: var(--alert-tint); font-variant-numeric: tabular-nums; }
+  td.now { color: var(--ok); background: var(--ok-tint); }
+  td.now-open { color: var(--ink-muted); background: var(--surface-sunk); }
+  .state { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.05em; text-transform: uppercase; font-weight: 600; display: block; }
+  .why { display: block; color: var(--ink-muted); font-size: 0.78rem; margin-top: 0.1rem; }
+
+  /* Code / terminal */
+  .block { width: 100%; overflow-x: auto; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); }
+  pre { margin: 0; padding: 1rem 1.15rem; font-family: var(--mono); font-size: 0.8125rem; line-height: 1.6; color: var(--ink-body); }
+  pre b { color: var(--ink); font-weight: 600; }
+  pre .c { color: var(--ink-faint); }
+  pre .hot { color: var(--alert); font-weight: 600; }
+  pre .good { color: var(--ok); font-weight: 600; }
+  pre .k { color: var(--durable); font-weight: 600; }
+  .block-label {
+    font-family: var(--mono); font-size: 0.68rem; letter-spacing: 0.09em; text-transform: uppercase;
+    color: var(--ink-faint); padding: 0.5rem 1.15rem; border-bottom: 1px solid var(--line-soft);
+    background: var(--surface-sunk);
+  }
+
+  /* The rule that came out of it */
+  .rule {
+    border-inline-start: 3px solid var(--cache);
+    background: var(--cache-tint);
+    padding: 1.1rem 1.35rem;
+    border-radius: 0 6px 6px 0;
+    display: flex; flex-direction: column; gap: 0.5rem;
+  }
+  .rule p { max-width: 42rem; }
+  .rule .said { font-family: var(--serif); font-size: var(--s-1); color: var(--ink); line-height: 1.45; }
+
+  ul.notes { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.75rem; max-width: var(--prose); }
+  ul.notes li { padding-inline-start: 1.1rem; position: relative; }
+  ul.notes li::before {
+    content: ""; position: absolute; inset-inline-start: 0; top: 0.6em;
+    width: 0.3rem; height: 0.3rem; border-radius: 50%; background: var(--ink-faint);
+  }
+  ul.notes li.open::before { background: var(--alert); }
+  ul.notes li.act::before { background: var(--durable); }
+
+  .footnote { font-size: var(--s--1); color: var(--ink-faint); max-width: var(--prose); }
+  hr { border: none; border-top: 1px solid var(--line); margin: 0; }
+
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+  @media (max-width: 34rem) {
+    :root { --s-4: 1.9rem; --s-3: 1.5rem; --s-2: 1.22rem; }
+    .page { padding: 2.5rem 1.1rem 4rem; gap: 2.25rem; }
+  }
+</style>
+<style>
+  /* Minimal reset — the artifact host provided this; a standalone file must not
+     rely on it. */
+  *, *::before, *::after { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { margin: 0; min-height: 100vh; }
+  img, svg { display: block; max-width: 100%; }
+  table { border-collapse: collapse; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <p class="eyebrow">Text-to-SQL · branch redis-question-cache · uncommitted</p>
+    <h1>Multi-chat history, and the four cache bugs it uncovered</h1>
+    <p class="lede">
+      Conversations moved out of the browser into MySQL, each with its own context
+      window. Wiring that up exposed four ways the question cache was treating
+      different questions as the same one. All four are now closed or contained.
+    </p>
+    <div class="meta">
+      <p><b>Tests</b> 315 passing</p>
+      <p><b>Verified against</b> MySQL 9.2.0 · LM Studio · Qdrant</p>
+      <p><b>Frontend</b> builds clean, not clicked</p>
+    </div>
+  </header>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">Shipped</p>
+      <h2>Multi-chat history</h2>
+      <p>
+        The backend now owns conversations. Each chat's context window is measured from
+        its own rows, so two chats cannot share a budget.
+      </p>
+    </div>
+
+    <div class="parts">
+      <div class="part"><code>db/07_app_schema.sql</code><span>app_db with chats + turns, isolated from legal_db by grant — CDC can't index transcripts, generated SQL can't read them.</span></div>
+      <div class="part"><code>services/chat_store.py</code><span>Own connection, own write user. Refuses to open a socket if pointed at the queryable schema.</span></div>
+      <div class="part"><code>routers/chats.py</code><span>Five endpoints. Three store failures map to three status codes, not one 500.</span></div>
+      <div class="part"><code>services/pipeline.py</code><span>New <code>run_chat_turn</code> loads that chat's history and appends the turn. <code>run_pipeline</code> stays stateless.</span></div>
+      <div class="part"><code>frontend/useChats.js</code><span>Owns every conversation; patches turns by identity, not position. Per-chat abort controllers.</span></div>
+      <div class="part"><code>frontend/ChatList.jsx</code><span>Sidebar: switch, rename, delete, running marker per chat.</span></div>
+    </div>
+
+    <h3>The bug that had to be fixed to make it work</h3>
+    <p>
+      The single-chat code patched <code>turns[turns.length - 1]</code> — the last turn of
+      whatever was on screen. Correct only while there is one chat and it is the visible
+      one. With several, switching tabs mid-answer wrote one chat's tokens into another.
+    </p>
+
+    <div class="block">
+      <p class="block-label">The whole feature, in one verified run</p>
+<pre>create A: 201 | create B: 201
+both finished in <b>69.5s</b>          <span class="c">// two runs queueing on one local model</span>
+  A: saved=True   B: saved=True
+
+follow-up in A →
+  A transcript: ['كم عدد القضايا المفتوحة ', 'وكم منها في محكمة رام ال']
+  B transcript: ['كم عدد القضاة؟']
+  isolated    : <span class="good">True</span>          <span class="c">// A's follow-up saw A's turn, none of B's</span>
+  chat_id+history → <span class="good">422</span>      <span class="c">// two sources for one transcript, refused</span></pre>
+    </div>
+  </section>
+
+  <hr>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">Found while tracing</p>
+      <h2>Four cache bugs</h2>
+      <p>
+        Each one was reproduced against real code before being called a bug, and each fix
+        was verified by re-running the same reproduction.
+      </p>
+    </div>
+
+    <div class="tw">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">What could happen</th>
+            <th scope="col">Before</th>
+            <th scope="col">After</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">
+              <span dir="auto">المدعى</span> (the sued) served the SQL cached for
+              <span dir="auto">المدعي</span> (plaintiff)
+              <span class="why">Two opposite parties to a case, one hash.</span>
+            </th>
+            <td class="was"><span class="state">served</span></td>
+            <td class="now"><span class="state">blocked</span><span class="why">Split normalizer — keys stop folding ى→ي and ة→ه.</span></td>
+          </tr>
+          <tr>
+            <th scope="row">
+              A chat deep in one subject ran SQL built for another chat's cold opening
+              <span class="why">The key is the question alone — no chat id, no history.</span>
+            </th>
+            <td class="was"><span class="state">served</span></td>
+            <td class="now"><span class="state">blocked</span><span class="why"><code>QUERY_CACHE_FOLLOW_UPS</code> now defaults false.</span></td>
+          </tr>
+          <tr>
+            <th scope="row">
+              <code>CONTEXT_MAX_TURNS=0</code> silently turned "store first turns only" into
+              "store everything"
+              <span class="why">A context knob reaching cache policy. 0 reads as "unlimited"; it means "no memory".</span>
+            </th>
+            <td class="was"><span class="state">stored</span></td>
+            <td class="now"><span class="state">blocked</span><span class="why">Cache policy now derives from untrimmed input.</span></td>
+          </tr>
+          <tr>
+            <th scope="row">
+              An anaphoric question written to the cache from a first turn
+              <span class="why">The write gate checks turn position, never question content.</span>
+            </th>
+            <td class="was"><span class="state">stored</span></td>
+            <td class="now now-open"><span class="state">contained</span><span class="why">Still stored, but only another first turn can read it — and that has no context to contradict.</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="block">
+      <p class="block-label">All four reproductions, re-run against the fixed code</p>
+<pre>QUERY_CACHE_FOLLOW_UPS = False
+
+1  anaphoric written from a first turn      True    <span class="c">(unchanged, by design)</span>
+2  chat B reads chat A's cold-start SQL     <span class="good">False</span>   <span class="c">← was True</span>
+3  المدعى served المدعي SQL                  <span class="good">False</span>   <span class="c">← was True</span>
+4  CONTEXT_MAX_TURNS=0 stores a follow-up   <span class="good">False</span>   <span class="c">← was True</span></pre>
+    </div>
+  </section>
+
+  <hr>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">The rule that came out of it</p>
+      <h2>One bug wearing four coats</h2>
+    </div>
+
+    <div class="rule">
+      <p class="said">
+        “Every caching problem here is the same bug — two different questions get treated
+        as the same because the thing that made them different got erased. Semantic does
+        it with vectors, the normalizer does it with Arabic folding. Same crime, different
+        spot.”
+      </p>
+      <p>
+        That is now written into <code>query_cache.py</code>'s module docstring, because it
+        is the argument that should stop the next widening of the key. The module already
+        rejected semantic matching for exactly this reason and then shipped the lexical
+        version of the same mistake.
+      </p>
+    </div>
+
+    <h3>What the split actually does</h3>
+    <p>
+      Two normalizers, because the callers fail differently. A false merge in search is one
+      weak candidate a threshold rejects. A false merge in a key is the wrong stored query
+      running and reporting a confident number.
+    </p>
+
+    <div class="block">
+      <p class="block-label">services/arabic.py</p>
+<pre><span class="k">normalize()</span>      <span class="c">// soft, for search — mirrors the DB's *_norm columns</span>
+    NFC · diacritics · tatweel · hamza carriers
+    <span class="hot">+ ى→ي  ة→ه</span>          <span class="c">← merges distinct words</span>
+    + definite article
+
+<span class="k">normalize_key()</span>  <span class="c">// strict, for cache keys</span>
+    NFC · diacritics · tatweel · hamza carriers
+    + definite article        <span class="c">← the case the cache was built for:</span>
+                              <span class="c">  القضايا المدورة → قضايا مدورة</span></pre>
+    </div>
+
+    <p class="footnote">
+      Evidence for dropping both folds, not just <code>ى→ي</code>:
+      <span dir="auto">كتابة العقد</span> (drafting the contract) collided with
+      <span dir="auto">كتابه العقد</span> (his contract book), and
+      <span dir="auto">محاكمة المتهم</span> (the trial) with
+      <span dir="auto">محاكمه</span> (his court). The cost is real and accepted —
+      <span dir="auto">شكوى</span> and <span dir="auto">شكوي</span> are one word spelled two
+      ways and now key differently. That is a hit given up to stop serving the plaintiff's
+      query for a question about the defendant.
+    </p>
+  </section>
+
+  <hr>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">Open</p>
+      <h2>Still outstanding</h2>
+    </div>
+    <ul class="notes">
+      <li class="open">
+        <strong>Cache hits skip the 413 context guard.</strong> Measured at 2,377 tokens
+        against a 200-token budget — 11.9× over, HTTP 200. Three-line fix, not applied.
+        Practically unreachable while follow-up reads are off, because overflowing the
+        window needs history and a cache hit now needs none; it returns the moment
+        <code>QUERY_CACHE_FOLLOW_UPS</code> goes back to true.
+      </li>
+      <li class="open">
+        <strong>The UI is unverified.</strong> No browser automation available here, so the
+        React wiring rests on a clean build and a proven API contract. The case worth
+        clicking is the one the old code got wrong: start an answer, switch chats while it
+        streams, come back.
+      </li>
+      <li class="open">
+        <strong>Hit rate will drop, possibly a lot.</strong> First-turn-only reads mean a
+        long chat full of unrelated self-contained questions gets no hits after its first.
+        The counters in the Cache panel are the thing to watch before deciding whether to
+        turn follow-up reads back on.
+      </li>
+      <li class="open">
+        <strong><code>ة→ه</code> removal was one step past what was asked.</strong> Easy to
+        put back if the lost hits matter more than the collision.
+      </li>
+    </ul>
+  </section>
+
+  <hr>
+
+  <section>
+    <div class="section-head">
+      <p class="eyebrow">Action</p>
+      <h2>Yours</h2>
+    </div>
+    <ul class="notes">
+      <li class="act">
+        <strong>Nothing is committed.</strong> All of it sits in the working tree on
+        <code>redis-question-cache</code>.
+      </li>
+      <li class="act">
+        <strong>Check <code>CONTEXT_WINDOW_TOKENS</code> matches LM Studio.</strong> It is
+        set now, but it has to equal the context length the model is actually loaded with.
+        Set it higher and a full chat stops failing cleanly: LM Studio truncates the start
+        of the prompt, which is the schema, and the model answers with invented columns.
+      </li>
+      <li class="act">
+        <strong>Decide on the 413 guard.</strong> Applying it means a chat at its limit can
+        no longer be answered even from cache — the cheapest turn becomes the refused one.
+        Consistent with the design's stated position, but a behaviour change.
+      </li>
+    </ul>
+  </section>
+
+</div>
+
+</body>
+</html>

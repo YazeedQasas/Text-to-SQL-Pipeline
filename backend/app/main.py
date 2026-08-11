@@ -9,6 +9,7 @@ from app.routers.activity import router as activity_router
 from app.routers.cache import router as cache_router
 from app.routers.catalog import router as catalog_router
 from app.routers.cdc import router as cdc_router
+from app.routers.chats import router as chats_router
 from app.routers.concepts import router as concepts_router
 from app.routers.query import router as query_router
 from app.services import activity, cdc, qdrant_watch, query_cache
@@ -83,6 +84,7 @@ app.include_router(cdc_router)
 app.include_router(concepts_router)
 app.include_router(activity_router)
 app.include_router(cache_router)
+app.include_router(chats_router)
 
 
 @app.get("/health")

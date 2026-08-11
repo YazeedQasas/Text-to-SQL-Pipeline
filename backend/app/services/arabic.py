@@ -47,7 +47,27 @@ _DIACRITICS = re.compile(r"[ؐ-ًؚ-ٰٟۖ-ۭـ]")
 # "القضايا المدورة؟" that scored measurably worse than the clean term.
 _WORD = re.compile(r"[A-Za-z0-9ء-غف-ي٠-٩]+")
 
-_ALEF_VARIANTS = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا", "ى": "ي", "ة": "ه"})
+# Folding is split in two, because the two halves have different risk and the
+# callers have different tolerance for it.
+#
+# SAFE: no two distinct Arabic words differ only by which hamza-carrier is
+# written. Omitting the hamza is one of the most common spelling variations
+# there is, so folding these buys recall and costs nothing.
+_HAMZA_FORMS = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا"})
+
+# LOSSY: these two MERGE DISTINCT WORDS, and in this domain they merge words
+# that name opposite parties to a case. Measured:
+#
+#   ى → ي     المدعي (plaintiff)      ≡ المدعى (the claimed/sued)
+#             على (preposition "on")  ≡ علي (the given name)
+#   ة → ه     كتابة العقد (drafting)  ≡ كتابه العقد (his book)
+#             محاكمة المتهم (trial)   ≡ محاكمه (his court)
+#
+# They are still applied for SEARCH, where a wrong match is one candidate among
+# several that a threshold and a score can still reject, and where they mirror
+# the database's *_norm columns (db/01_schema.sql) so a term written either way
+# reaches the same row. They are NOT applied to a cache key — see normalize_key.
+_LOSSY_FORMS = str.maketrans({"ى": "ي", "ة": "ه"})
 
 # The definite article, at the start of any word. "التشريعات السارية" must reach
 # the concept written "التشريع الساري", and stripping ال is what lets the shared
@@ -55,18 +75,59 @@ _ALEF_VARIANTS = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا", 
 _DEFINITE_ARTICLE = re.compile(r"\bال")
 
 
+def _fold_common(text: str) -> str:
+    """The folds both normalizers share: NFC, diacritics, tatweel, hamza forms."""
+    folded = unicodedata.normalize("NFC", text)
+    folded = _DIACRITICS.sub("", folded)
+    return folded.translate(_HAMZA_FORMS)
+
+
 def normalize(text: str) -> str:
     """Fold spelling variation the way the database's *_norm columns do.
 
-    Diacritics dropped, hamza forms collapsed to bare alef, ى to ي, ة to ه, the
-    definite article removed, whitespace collapsed. Deliberately matches the
-    normalization described in schema_docs.py so a term written either way in a
-    question reaches the same concept.
+    THE SOFT NORMALIZER, for search and concept matching. Diacritics dropped,
+    hamza forms collapsed to bare alef, ى to ي, ة to ه, the definite article
+    removed, whitespace collapsed. Deliberately matches the normalization
+    described in schema_docs.py so a term written either way in a question
+    reaches the same concept.
+
+    Recall is the right trade here: a concept that matches too broadly still has
+    to clear CONCEPT_SCORE_THRESHOLD, and it competes with other candidates. Do
+    not use this to key a cache — see normalize_key for why.
     """
-    folded = unicodedata.normalize("NFC", text)
-    folded = _DIACRITICS.sub("", folded)
-    folded = folded.translate(_ALEF_VARIANTS)
+    folded = _fold_common(text).translate(_LOSSY_FORMS)
     folded = _DEFINITE_ARTICLE.sub("", folded)
+    return re.sub(r"\s+", " ", folded).strip()
+
+
+def normalize_key(text: str) -> str:
+    """Fold ONLY what cannot change meaning. For cache keys.
+
+    THE STRICT NORMALIZER. Identical to normalize() except that it does not
+    apply _LOSSY_FORMS, because those merge words this domain has to keep apart
+    — "من هو المدعي؟" and "من هو المدعى؟" hashed to the same key, and that key
+    decides which SQL runs.
+
+    The two normalizers exist because the two callers fail differently, and the
+    asymmetry is the whole argument:
+
+        a false MERGE in search   → one weak candidate, rejected by a threshold
+        a false MERGE in a key    → the wrong stored query runs, and reports a
+                                    confident number for a question nobody asked
+        a false SPLIT in a key    → a cache miss; the question is answered from
+                                    scratch, correctly, a few seconds slower
+
+    So search folds aggressively and a key folds conservatively. The cost is
+    real and accepted: "شكوى" and "شكوي" are one word spelled two ways and now
+    key differently, which is a hit we give up to stop serving plaintiff's SQL
+    for a question about the defendant.
+
+    What is still folded is what genuinely cannot carry meaning: Unicode
+    canonicalisation, diacritics and tatweel (decoration in modern prose), the
+    hamza carriers, and the definite article — the last of which is the case
+    this cache was built for, "القضايا المدورة" reaching "قضايا مدورة".
+    """
+    folded = _DEFINITE_ARTICLE.sub("", _fold_common(text))
     return re.sub(r"\s+", " ", folded).strip()
 
 
